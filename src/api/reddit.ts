@@ -1,54 +1,50 @@
 /**
- * Reddit API client — public JSON endpoints, no auth required.
- * Falls back gracefully if Reddit blocks the IP.
+ * Arctic Shift API client — public Reddit archive, no credentials needed.
+ * https://arctic-shift.photon-reddit.com
  *
- * When/if OAuth credentials become available, swap BASE_URL back to
- * https://oauth.reddit.com and re-add the token fetch logic.
+ * Replaces direct Reddit endpoints which block Hetzner IPs (403).
+ * Arctic Shift has no IP restrictions and no auth requirements.
+ * Data is typically a few hours behind real-time — fine for analytics.
  */
 
-import { config } from '../config';
 import { logger } from '../logger';
 
-const BASE_URL = 'https://www.reddit.com';
+const BASE_URL = 'https://arctic-shift.photon-reddit.com/api';
 
-// Minimum ms between requests — be a polite scraper
-const REQUEST_DELAY_MS = 2000;
+// Throttle to be a polite requester
+const REQUEST_DELAY_MS = 500;
 
 let lastRequestAt = 0;
 
-async function redditGet<T>(path: string, params?: Record<string, string>): Promise<T> {
-  // Throttle: wait until at least REQUEST_DELAY_MS since last call
+async function arcticGet<T>(path: string, params?: Record<string, string>): Promise<T> {
   const now = Date.now();
   const wait = REQUEST_DELAY_MS - (now - lastRequestAt);
   if (wait > 0) await sleep(wait);
   lastRequestAt = Date.now();
 
   const url = new URL(`${BASE_URL}${path}`);
-  url.searchParams.set('raw_json', '1');
   if (params) {
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   }
 
+  logger.debug(`[arctic] GET ${url.toString()}`);
+
   const res = await fetch(url.toString(), {
     headers: {
-      'User-Agent': config.redditUserAgent,
-      'Accept': 'application/json',
+      'Accept':     'application/json',
+      'User-Agent': 'community-pulse/1.0',
     },
   });
 
   if (res.status === 429) {
     const retryAfter = parseInt(res.headers.get('retry-after') ?? '60', 10);
-    logger.warn(`[reddit] Rate limited — waiting ${retryAfter}s`);
+    logger.warn(`[arctic] Rate limited — waiting ${retryAfter}s`);
     await sleep(retryAfter * 1000);
-    return redditGet<T>(path, params);
-  }
-
-  if (res.status === 403) {
-    throw new Error(`Reddit blocked this IP (403). Server IP may be on a blocklist.`);
+    return arcticGet<T>(path, params);
   }
 
   if (!res.ok) {
-    throw new Error(`Reddit request failed: ${res.status} ${url.toString()}`);
+    throw new Error(`Arctic Shift request failed: ${res.status} ${url.toString()}`);
   }
 
   return res.json() as Promise<T>;
@@ -88,54 +84,86 @@ export interface SubredditInfo {
 // ── API methods ────────────────────────────────────────────────────────────────
 
 export async function fetchNewPosts(subreddit: string, limit = 100): Promise<RedditPost[]> {
-  const data = await redditGet<any>(`/r/${subreddit}/new.json`, {
+  const data = await arcticGet<{ data: any[] }>('/posts/search', {
+    subreddit,
+    sort:  'new',
     limit: String(Math.min(limit, 100)),
   });
-  return data.data.children.map((c: any) => c.data as RedditPost);
+  return (data.data ?? []).map(normalizePost);
 }
 
 export async function fetchPostComments(
-  subreddit: string,
+  _subreddit: string,
   postId: string,
 ): Promise<RedditComment[]> {
-  const data = await redditGet<any[]>(`/r/${subreddit}/comments/${postId}.json`, {
-    limit: '500',
-    depth: '10',
+  const data = await arcticGet<{ data: any[] }>('/comments/search', {
+    link_id: `t3_${postId}`,
+    limit:   '500',
   });
-  const commentListing = data[1];
-  return flattenComments(commentListing.data.children);
+
+  return (data.data ?? [])
+    .filter(c =>
+      c.author !== '[deleted]' &&
+      c.body   !== '[deleted]' &&
+      c.body   !== '[removed]',
+    )
+    .map(c => ({
+      id:          c.id,
+      parent_id:   c.parent_id,
+      author:      c.author ?? '[deleted]',
+      body:        c.body ?? '',
+      score:       toNumber(c.score),
+      created_utc: toNumber(c.created_utc),
+    }));
 }
 
-function flattenComments(children: any[]): RedditComment[] {
-  const results: RedditComment[] = [];
-  for (const child of children) {
-    if (
-      child.kind === 't1' &&
-      child.data.author !== '[deleted]' &&
-      child.data.body !== '[deleted]'
-    ) {
-      results.push({
-        id:          child.data.id,
-        parent_id:   child.data.parent_id,
-        author:      child.data.author,
-        body:        child.data.body,
-        score:       child.data.score,
-        created_utc: child.data.created_utc,
-      });
-      if (child.data.replies?.data?.children) {
-        results.push(...flattenComments(child.data.replies.data.children));
-      }
-    }
-  }
-  return results;
-}
-
+/**
+ * Arctic Shift is an archive — it doesn't track live active-user counts.
+ * Subscriber count is pulled from the subreddit_subscribers field on posts.
+ * active_user_count is always returned as 0 (not available via archive).
+ */
 export async function fetchSubredditInfo(subreddit: string): Promise<SubredditInfo> {
-  const data = await redditGet<any>(`/r/${subreddit}/about.json`);
+  try {
+    const data = await arcticGet<{ data: any[] }>('/posts/search', {
+      subreddit,
+      limit: '1',
+    });
+    const post = data.data?.[0];
+    if (post?.subreddit_subscribers) {
+      return {
+        subscribers:       toNumber(post.subreddit_subscribers),
+        active_user_count: 0,
+      };
+    }
+  } catch (err) {
+    logger.warn(`[arctic] Could not fetch subreddit info: ${err}`);
+  }
+  return { subscribers: 0, active_user_count: 0 };
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function normalizePost(p: any): RedditPost {
   return {
-    subscribers:       data.data.subscribers,
-    active_user_count: data.data.active_user_count,
+    id:              p.id,
+    title:           p.title ?? '',
+    author:          p.author ?? '[deleted]',
+    score:           toNumber(p.score),
+    upvote_ratio:    toNumber(p.upvote_ratio),
+    num_comments:    toNumber(p.num_comments),
+    link_flair_text: p.link_flair_text ?? null,
+    url:             p.url ?? '',
+    permalink:       p.permalink ?? `/r/${p.subreddit}/comments/${p.id}/`,
+    selftext:        p.selftext ?? '',
+    created_utc:     toNumber(p.created_utc),
+    is_self:         p.is_self ?? false,
   };
+}
+
+function toNumber(v: unknown): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') return parseFloat(v) || 0;
+  return 0;
 }
 
 function sleep(ms: number) {
