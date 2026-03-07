@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { collectNewPosts } from './collectors/postCollector';
 import { collectCommentsForPosts } from './collectors/commentCollector';
 import { collectSubredditStats } from './collectors/statsCollector';
+import { collectSentiment } from './collectors/sentimentCollector';
 import { config } from './config';
 import { logger } from './logger';
 
@@ -31,7 +32,17 @@ export function startScheduler(): void {
     }
   });
 
+  // ── Daily sentiment analysis at configured hour (UTC) ───────────────────────
+  cron.schedule(`0 ${config.sentimentHour} * * *`, async () => {
+    logger.info('[scheduler] Daily sentiment analysis triggered');
+    try {
+      await collectSentiment();
+    } catch (err) {
+      logger.error('[scheduler] Sentiment analysis failed:', err);
+    }
+  });
+
   logger.info(
-    `[scheduler] Started — posts every ${postInterval}min, stats every ${statsInterval}min`,
+    `[scheduler] Started — posts every ${postInterval}min, stats every ${statsInterval}min, sentiment daily at ${config.sentimentHour}:00 UTC`,
   );
 }

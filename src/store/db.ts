@@ -48,11 +48,34 @@ export function initDb(): void {
       active_users INTEGER
     );
 
+    CREATE TABLE IF NOT EXISTS sentiment_reports (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      taken_at  TEXT NOT NULL,
+      mood      TEXT,
+      raw_json  TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_jobs (
+      id            TEXT PRIMARY KEY,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      question      TEXT NOT NULL,
+      window_hours  INTEGER NOT NULL,
+      collect_cap   INTEGER NOT NULL,
+      status        TEXT NOT NULL,
+      answer        TEXT,
+      collected     INTEGER,
+      analysed      INTEGER,
+      error         TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_posts_created   ON posts    (created_utc DESC);
     CREATE INDEX IF NOT EXISTS idx_posts_flair      ON posts    (flair);
     CREATE INDEX IF NOT EXISTS idx_comments_post    ON comments (post_id);
     CREATE INDEX IF NOT EXISTS idx_comments_created ON comments (created_utc DESC);
     CREATE INDEX IF NOT EXISTS idx_snapshots_time   ON subreddit_snapshots (taken_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_sentiment_time   ON sentiment_reports (taken_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_created     ON chat_jobs (created_at DESC);
   `);
 
   logger.info(`[db] Reddit DB opened at ${config.dbPath}`);
@@ -196,4 +219,131 @@ export function getAllSnapshots(): SnapshotRow[] {
   return getDb()
     .prepare(`SELECT * FROM subreddit_snapshots ORDER BY taken_at ASC`)
     .all() as SnapshotRow[];
+}
+
+// ── Posts (extended queries) ───────────────────────────────────────────────────
+
+/** Posts created within the last N hours, ordered newest first. */
+export function getPostsInWindow(windowHours: number, limit = 500): PostRow[] {
+  const since = Math.floor(Date.now() / 1000) - windowHours * 3600;
+  return getDb()
+    .prepare(`
+      SELECT * FROM posts
+      WHERE created_utc >= ?
+      ORDER BY created_utc DESC
+      LIMIT ?
+    `)
+    .all(since, limit) as PostRow[];
+}
+
+export function countAllPosts(): number {
+  const row = getDb()
+    .prepare(`SELECT COUNT(*) as n FROM posts`)
+    .get() as { n: number };
+  return row.n;
+}
+
+export function countAllComments(): number {
+  const row = getDb()
+    .prepare(`SELECT COUNT(*) as n FROM comments`)
+    .get() as { n: number };
+  return row.n;
+}
+
+export function getLatestSnapshot(): SnapshotRow | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM subreddit_snapshots ORDER BY taken_at DESC LIMIT 1`)
+    .get() as SnapshotRow | undefined;
+}
+
+export function getPostsPerDay(days = 30): { day: string; count: number }[] {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  return getDb()
+    .prepare(`
+      SELECT date(collected_at) as day, COUNT(*) as count
+      FROM posts
+      WHERE collected_at >= ?
+      GROUP BY day
+      ORDER BY day ASC
+    `)
+    .all(since) as { day: string; count: number }[];
+}
+
+// ── Sentiment reports ──────────────────────────────────────────────────────────
+
+export interface SentimentRow {
+  id:       number;
+  taken_at: string;
+  mood:     string | null;
+  raw_json: string | null;
+}
+
+export function insertSentimentReport(mood: string, rawJson: string): void {
+  getDb()
+    .prepare(`INSERT INTO sentiment_reports (taken_at, mood, raw_json) VALUES (?, ?, ?)`)
+    .run(new Date().toISOString(), mood, rawJson);
+}
+
+export function getSentimentReports(limit = 30): SentimentRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM sentiment_reports ORDER BY taken_at DESC LIMIT ?`)
+    .all(limit) as SentimentRow[];
+}
+
+// ── Chat jobs ──────────────────────────────────────────────────────────────────
+
+export interface ChatJobRow {
+  id:           string;
+  created_at:   string;
+  updated_at:   string;
+  question:     string;
+  window_hours: number;
+  collect_cap:  number;
+  status:       'queued' | 'running' | 'completed' | 'failed';
+  answer:       string | null;
+  collected:    number | null;
+  analysed:     number | null;
+  error:        string | null;
+}
+
+export function insertChatJob(row: Omit<ChatJobRow, 'answer' | 'collected' | 'analysed' | 'error'>): void {
+  getDb()
+    .prepare(`
+      INSERT INTO chat_jobs (id, created_at, updated_at, question, window_hours, collect_cap, status)
+      VALUES (@id, @created_at, @updated_at, @question, @window_hours, @collect_cap, @status)
+    `)
+    .run(row);
+}
+
+export function updateChatJob(id: string, fields: Partial<ChatJobRow>): void {
+  const updates = Object.keys(fields)
+    .map(k => `${k} = @${k}`)
+    .join(', ');
+  getDb()
+    .prepare(`UPDATE chat_jobs SET ${updates}, updated_at = @updated_at WHERE id = @id`)
+    .run({ ...fields, id, updated_at: new Date().toISOString() });
+}
+
+export function getChatJob(id: string): ChatJobRow | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM chat_jobs WHERE id = ?`)
+    .get(id) as ChatJobRow | undefined;
+}
+
+export function deleteChatJob(id: string): boolean {
+  const result = getDb()
+    .prepare(`DELETE FROM chat_jobs WHERE id = ?`)
+    .run(id);
+  return result.changes > 0;
+}
+
+export function getChatJobsPage(page: number, pageSize: number): { items: ChatJobRow[]; total: number } {
+  const offset = (page - 1) * pageSize;
+  const items = getDb()
+    .prepare(`SELECT * FROM chat_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(pageSize, offset) as ChatJobRow[];
+  const { n } = getDb()
+    .prepare(`SELECT COUNT(*) as n FROM chat_jobs`)
+    .get() as { n: number };
+  return { items, total: n };
 }

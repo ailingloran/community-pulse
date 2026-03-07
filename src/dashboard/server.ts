@@ -5,9 +5,19 @@ import {
   getPostsBetween,
   getCommentsByPost,
   getAllSnapshots,
-  getSnapshotsBetween,
   countPostsSince,
+  countAllPosts,
+  countAllComments,
+  getLatestSnapshot,
+  getPostsPerDay,
+  getSentimentReports,
 } from '../store/db';
+import {
+  createChatJob,
+  getChatJobResponse,
+  getChatHistory,
+  removeChatJob,
+} from './chatJobs';
 
 const app = express();
 app.use(express.json());
@@ -26,11 +36,13 @@ app.use(auth);
 // ── Routes ─────────────────────────────────────────────────────────────────────
 
 app.get('/api/status', (_req, res) => {
-  const now = new Date();
-  const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   res.json({
-    ok: true,
-    postsLast24h: countPostsSince(dayAgo),
+    ok:             true,
+    postsLast24h:   countPostsSince(dayAgo),
+    totalPosts:     countAllPosts(),
+    totalComments:  countAllComments(),
+    latestSnapshot: getLatestSnapshot() ?? null,
   });
 });
 
@@ -44,7 +56,7 @@ app.get('/api/snapshots', (_req, res) => {
   }
 });
 
-/** Posts within a date range (?from=ISO&to=ISO, default last 30 days). */
+/** Posts within a date range (?days=30). */
 app.get('/api/posts', (req, res) => {
   try {
     const to   = new Date();
@@ -69,7 +81,43 @@ app.get('/api/posts/:postId/comments', (req, res) => {
   }
 });
 
-/** Manually trigger a post + comment collection run. */
+/** Posts-per-day + snapshots for trend charts (?days=30). */
+app.get('/api/trends', (req, res) => {
+  try {
+    const days = parseInt((req.query.days as string) || '30', 10);
+    res.json({
+      postsPerDay: getPostsPerDay(days),
+      snapshots:   getAllSnapshots(),
+    });
+  } catch (err) {
+    logger.error('[dashboard] /api/trends error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── Sentiment ──────────────────────────────────────────────────────────────────
+
+app.get('/api/sentiment', (req, res) => {
+  try {
+    const limit = Math.min(parseInt((req.query.limit as string) || '30', 10), 100);
+    res.json(getSentimentReports(limit));
+  } catch (err) {
+    logger.error('[dashboard] /api/sentiment error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/trigger/sentiment', (_req, res) => {
+  import('../collectors/sentimentCollector').then(({ collectSentiment }) => {
+    collectSentiment().catch((err: unknown) =>
+      logger.error('[dashboard] Manual sentiment failed:', err),
+    );
+    res.json({ ok: true, message: 'Sentiment analysis triggered' });
+  }).catch(() => res.status(500).json({ error: 'Failed to load collector' }));
+});
+
+// ── Collection trigger ────────────────────────────────────────────────────────
+
 app.post('/api/trigger/collect', (_req, res) => {
   import('../collectors/postCollector').then(async ({ collectNewPosts }) => {
     const { collectCommentsForPosts } = await import('../collectors/commentCollector');
@@ -78,6 +126,67 @@ app.post('/api/trigger/collect', (_req, res) => {
       .catch((err: unknown) => logger.error('[dashboard] Manual collect failed:', err));
     res.json({ ok: true, message: 'Collection triggered' });
   }).catch(() => res.status(500).json({ error: 'Failed to load collector' }));
+});
+
+// ── Chat jobs ─────────────────────────────────────────────────────────────────
+
+app.get('/api/chat', (req, res) => {
+  try {
+    const page     = parseInt((req.query.page     as string) || '1',  10);
+    const pageSize = parseInt((req.query.pageSize as string) || '20', 10);
+    res.json(getChatHistory(page, pageSize));
+  } catch (err) {
+    logger.error('[dashboard] GET /api/chat error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/chat', (req, res) => {
+  try {
+    const { question, windowHours = 24, collectCap = 300 } = req.body as {
+      question:     string;
+      windowHours?: number;
+      collectCap?:  number;
+    };
+    if (!question?.trim()) {
+      res.status(400).json({ error: 'question is required' });
+      return;
+    }
+    const job = createChatJob(question.trim(), windowHours, collectCap);
+    res.status(202).json(job);
+  } catch (err) {
+    logger.error('[dashboard] POST /api/chat error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/chat/:jobId', (req, res) => {
+  try {
+    const job = getChatJobResponse(req.params.jobId);
+    if (!job) { res.status(404).json({ error: 'Chat job not found' }); return; }
+    res.json(job);
+  } catch (err) {
+    logger.error('[dashboard] GET /api/chat/:id error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/api/chat/:jobId', (req, res) => {
+  try {
+    const result = removeChatJob(req.params.jobId);
+    if (!result.ok) {
+      const status = result.reason === 'not_found' ? 404 : 409;
+      const error  = result.reason === 'not_found'
+        ? 'Chat job not found'
+        : 'Chat job is still running and cannot be deleted yet';
+      res.status(status).json({ error });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error('[dashboard] DELETE /api/chat/:id error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // ── Start ──────────────────────────────────────────────────────────────────────
