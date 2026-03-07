@@ -124,7 +124,7 @@ export function getPostsBetween(from: string, to: string): PostRow[] {
     .prepare(`
       SELECT * FROM posts
       WHERE collected_at BETWEEN ? AND ?
-      ORDER BY created_utc ASC
+      ORDER BY created_utc DESC
     `)
     .all(from, to) as PostRow[];
 }
