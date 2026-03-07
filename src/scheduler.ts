@@ -1,0 +1,37 @@
+import cron from 'node-cron';
+import { collectNewPosts } from './collectors/postCollector';
+import { collectCommentsForPosts } from './collectors/commentCollector';
+import { collectSubredditStats } from './collectors/statsCollector';
+import { config } from './config';
+import { logger } from './logger';
+
+export function startScheduler(): void {
+  // ── Posts + comments every 15 minutes ───────────────────────────────────────
+  const postInterval = config.postPollIntervalMin;
+  cron.schedule(`*/${postInterval} * * * *`, async () => {
+    logger.info('[scheduler] Post collection triggered');
+    try {
+      const newPostIds = await collectNewPosts();
+      if (newPostIds.length > 0) {
+        await collectCommentsForPosts(newPostIds);
+      }
+    } catch (err) {
+      logger.error('[scheduler] Post collection failed:', err);
+    }
+  });
+
+  // ── Subreddit stats every hour ───────────────────────────────────────────────
+  const statsInterval = config.statsPollIntervalMin;
+  cron.schedule(`*/${statsInterval} * * * *`, async () => {
+    logger.info('[scheduler] Stats collection triggered');
+    try {
+      await collectSubredditStats();
+    } catch (err) {
+      logger.error('[scheduler] Stats collection failed:', err);
+    }
+  });
+
+  logger.info(
+    `[scheduler] Started — posts every ${postInterval}min, stats every ${statsInterval}min`,
+  );
+}
