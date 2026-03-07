@@ -86,7 +86,6 @@ export interface SubredditInfo {
 export async function fetchNewPosts(subreddit: string, limit = 100): Promise<RedditPost[]> {
   const data = await arcticGet<{ data: any[] }>('/posts/search', {
     subreddit,
-    sort:  'new',
     limit: String(Math.min(limit, 100)),
   });
   return (data.data ?? []).map(normalizePost);
