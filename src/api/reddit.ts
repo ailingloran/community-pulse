@@ -95,12 +95,32 @@ export async function fetchPostComments(
   _subreddit: string,
   postId: string,
 ): Promise<RedditComment[]> {
-  const data = await arcticGet<{ data: any[] }>('/comments/search', {
-    link_id: `t3_${postId}`,
-    limit:   '500',
-  });
+  // Arctic Shift caps comments at 100 per request — paginate with `after` cursor
+  const PAGE_LIMIT = 100;
+  const MAX_PAGES  = 20;   // safety cap: 2000 comments max per post
+  const all: any[] = [];
+  let after: string | undefined;
 
-  return (data.data ?? [])
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const params: Record<string, string> = {
+      link_id: `t3_${postId}`,
+      limit:   String(PAGE_LIMIT),
+    };
+    if (after) params.after = after;
+
+    const data = await arcticGet<{ data: any[] }>('/comments/search', params);
+    const batch = data.data ?? [];
+    all.push(...batch);
+
+    // Stop when we get fewer results than requested (last page)
+    if (batch.length < PAGE_LIMIT) break;
+
+    // Use the created_utc of the last item as the next cursor
+    const last = batch[batch.length - 1];
+    after = String(last.created_utc);
+  }
+
+  return all
     .filter(c =>
       c.author !== '[deleted]' &&
       c.body   !== '[deleted]' &&
