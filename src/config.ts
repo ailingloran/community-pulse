@@ -1,16 +1,8 @@
 import 'node:process';
 
-function required(key: string): string {
-  const val = process.env[key];
-  if (!val) throw new Error(`Missing required env var: ${key}`);
-  return val;
-}
-
 export const config = {
-  // Reddit OAuth (script app — client credentials)
-  redditClientId:     required('REDDIT_CLIENT_ID'),
-  redditClientSecret: required('REDDIT_CLIENT_SECRET'),
-  redditUserAgent:    process.env.REDDIT_USER_AGENT ?? 'wows-reddit-scraper/1.0 (by /u/bloodminister)',
+  // Reddit user agent — identifies the scraper to Reddit's servers
+  redditUserAgent: process.env.REDDIT_USER_AGENT ?? 'community-pulse/1.0 (by /u/bloodminister)',
 
   // Target subreddit (without r/)
   subreddit: process.env.REDDIT_SUBREDDIT ?? 'WorldOfWarships',
