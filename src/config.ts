@@ -2,7 +2,7 @@ import 'node:process';
 
 export const config = {
   // Reddit user agent — identifies the scraper to Reddit's servers
-  redditUserAgent: process.env.REDDIT_USER_AGENT ?? 'community-pulse/1.0 (by /u/bloodmnster)',
+  redditUserAgent: process.env.REDDIT_USER_AGENT ?? 'community-pulse/1.0',
 
   // Target subreddit (without r/)
   subreddit: process.env.REDDIT_SUBREDDIT ?? 'WorldOfWarships',
