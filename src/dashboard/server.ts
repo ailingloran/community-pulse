@@ -13,6 +13,7 @@ import {
   getPostsPerDay,
   getSentimentReports,
 } from '../store/db';
+import { getLastAttemptedAt } from '../store/collectionState';
 import {
   createChatJob,
   getChatJobResponse,
@@ -43,8 +44,9 @@ app.get('/api/status', (_req, res) => {
     postsLast24h:     countPostsSince(dayAgo),
     totalPosts:       countAllPosts(),
     totalComments:    countAllComments(),
-    latestSnapshot:   getLatestSnapshot() ?? null,
-    lastCollectedAt:  getLastCollectedAt() ?? null,
+    latestSnapshot:    getLatestSnapshot() ?? null,
+    lastCollectedAt:   getLastCollectedAt() ?? null,
+    lastAttemptedAt:   getLastAttemptedAt() ?? null,
   });
 });
 

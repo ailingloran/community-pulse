@@ -1,5 +1,6 @@
 import { fetchNewPosts } from '../api/reddit';
 import { insertPost, getPostById, PostRow } from '../store/db';
+import { markCollectionAttempt } from '../store/collectionState';
 import { config } from '../config';
 import { logger } from '../logger';
 
@@ -8,6 +9,7 @@ import { logger } from '../logger';
  * Returns the list of newly inserted post IDs (for comment collection).
  */
 export async function collectNewPosts(): Promise<string[]> {
+  markCollectionAttempt();
   const posts = await fetchNewPosts(config.subreddit, 100);
   const newPostIds: string[] = [];
   const now = new Date().toISOString();
