@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { initDb, getPostIdsWithoutComments } from './store/db';
 import { startDashboard } from './dashboard/server';
 import { startScheduler } from './scheduler';
