@@ -1,4 +1,4 @@
-import { initDb } from './store/db';
+import { initDb, getPostIdsWithoutComments } from './store/db';
 import { startDashboard } from './dashboard/server';
 import { startScheduler } from './scheduler';
 import { collectNewPosts } from './collectors/postCollector';
@@ -23,7 +23,15 @@ async function main() {
     try {
       await collectSubredditStats();
       const newIds = await collectNewPosts();
-      await collectCommentsForPosts(newIds);
+
+      // Also backfill any existing posts that have no comments yet
+      const uncommentedIds = getPostIdsWithoutComments();
+      const toFetch = [...new Set([...newIds, ...uncommentedIds])];
+      if (uncommentedIds.length > 0) {
+        logger.info(`[backfill] ${uncommentedIds.length} post(s) have no comments — fetching now`);
+      }
+
+      await collectCommentsForPosts(toFetch);
     } catch (err) {
       logger.error('Manual collect failed:', err);
       process.exit(1);

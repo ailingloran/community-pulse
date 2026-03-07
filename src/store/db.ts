@@ -152,6 +152,18 @@ export function getCommentsByPost(postId: string): CommentRow[] {
     .all(postId) as CommentRow[];
 }
 
+/** Return IDs of posts that have no comments stored yet. */
+export function getPostIdsWithoutComments(): string[] {
+  const rows = getDb()
+    .prepare(`
+      SELECT post_id FROM posts
+      WHERE post_id NOT IN (SELECT DISTINCT post_id FROM comments)
+      ORDER BY created_utc DESC
+    `)
+    .all() as { post_id: string }[];
+  return rows.map(r => r.post_id);
+}
+
 // ── Subreddit snapshots ────────────────────────────────────────────────────────
 
 export interface SnapshotRow {
