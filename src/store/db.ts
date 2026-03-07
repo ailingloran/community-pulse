@@ -119,6 +119,13 @@ export function getPostById(postId: string): PostRow | undefined {
     .get(postId) as PostRow | undefined;
 }
 
+export function getLastCollectedAt(): string | null {
+  const row = getDb()
+    .prepare(`SELECT MAX(collected_at) as ts FROM posts`)
+    .get() as { ts: string | null };
+  return row.ts;
+}
+
 export function getPostsBetween(from: string, to: string): PostRow[] {
   return getDb()
     .prepare(`

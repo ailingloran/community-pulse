@@ -9,6 +9,7 @@ import {
   countAllPosts,
   countAllComments,
   getLatestSnapshot,
+  getLastCollectedAt,
   getPostsPerDay,
   getSentimentReports,
 } from '../store/db';
@@ -39,10 +40,11 @@ app.get('/api/status', (_req, res) => {
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   res.json({
     ok:             true,
-    postsLast24h:   countPostsSince(dayAgo),
-    totalPosts:     countAllPosts(),
-    totalComments:  countAllComments(),
-    latestSnapshot: getLatestSnapshot() ?? null,
+    postsLast24h:     countPostsSince(dayAgo),
+    totalPosts:       countAllPosts(),
+    totalComments:    countAllComments(),
+    latestSnapshot:   getLatestSnapshot() ?? null,
+    lastCollectedAt:  getLastCollectedAt() ?? null,
   });
 });
 
