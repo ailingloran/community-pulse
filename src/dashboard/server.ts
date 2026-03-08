@@ -24,10 +24,24 @@ import {
 const app = express();
 app.use(express.json());
 
+// Simple in-memory rate limiter for expensive AI endpoints (max 10/min globally)
+const chatTimestamps: number[] = [];
+function chatRateLimitOk(): boolean {
+  const now = Date.now();
+  const cutoff = now - 60_000;
+  while (chatTimestamps.length > 0 && chatTimestamps[0] < cutoff) chatTimestamps.shift();
+  if (chatTimestamps.length >= 10) return false;
+  chatTimestamps.push(now);
+  return true;
+}
+
 // ── Auth middleware ────────────────────────────────────────────────────────────
 
 function auth(req: Request, res: Response, next: NextFunction): void {
-  if (!config.dashboardSecret) { next(); return; }
+  if (!config.dashboardSecret) {
+    res.status(500).json({ error: 'Server misconfigured: REDDIT_DASHBOARD_SECRET not set' });
+    return;
+  }
   const header = req.headers.authorization ?? '';
   if (header === `Bearer ${config.dashboardSecret}`) { next(); return; }
   res.status(401).json({ error: 'Unauthorized' });
@@ -64,7 +78,7 @@ app.get('/api/snapshots', (_req, res) => {
 app.get('/api/posts', (req, res) => {
   try {
     const to   = new Date();
-    const days = parseInt((req.query.days as string) || '30', 10);
+    const days = Math.min(365, Math.max(1, parseInt((req.query.days as string) || '30', 10)));
     const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
     const rows = getPostsBetween(from.toISOString(), to.toISOString());
     res.json(rows);
@@ -88,7 +102,7 @@ app.get('/api/posts/:postId/comments', (req, res) => {
 /** Posts-per-day + snapshots for trend charts (?days=30). */
 app.get('/api/trends', (req, res) => {
   try {
-    const days = parseInt((req.query.days as string) || '30', 10);
+    const days = Math.min(365, Math.max(1, parseInt((req.query.days as string) || '30', 10)));
     res.json({
       postsPerDay: getPostsPerDay(days),
       snapshots:   getAllSnapshots(),
@@ -136,8 +150,8 @@ app.post('/api/trigger/collect', (_req, res) => {
 
 app.get('/api/chat', (req, res) => {
   try {
-    const page     = parseInt((req.query.page     as string) || '1',  10);
-    const pageSize = parseInt((req.query.pageSize as string) || '20', 10);
+    const page     = Math.max(1, parseInt((req.query.page as string) || '1', 10));
+    const pageSize = Math.min(100, Math.max(1, parseInt((req.query.pageSize as string) || '20', 10)));
     res.json(getChatHistory(page, pageSize));
   } catch (err) {
     logger.error('[dashboard] GET /api/chat error:', err);
@@ -146,6 +160,10 @@ app.get('/api/chat', (req, res) => {
 });
 
 app.post('/api/chat', (req, res) => {
+  if (!chatRateLimitOk()) {
+    res.status(429).json({ error: 'Too many chat requests — wait a moment and try again' });
+    return;
+  }
   try {
     const { question, windowHours = 24, collectCap = 300 } = req.body as {
       question:     string;
