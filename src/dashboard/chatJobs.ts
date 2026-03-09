@@ -6,10 +6,12 @@ import {
   deleteChatJob,
   getChatJobsPage,
   getPostsInWindow,
+  getPostById,
   getCommentsByPost,
+  searchPostsByFts,
   ChatJobRow,
 } from '../store/db';
-import { answerQuestion } from '../api/openai';
+import { answerQuestion, extractKeywordsForSearch } from '../api/openai';
 import { logger } from '../logger';
 
 // Track which jobs are currently executing so we don't delete them mid-run
@@ -97,17 +99,52 @@ async function runChatJob(jobId: string): Promise<void> {
   if (!row) { activeJobs.delete(jobId); return; }
 
   updateChatJob(jobId, { status: 'running' });
+  const windowLabel = row.window_hours ? `${row.window_hours}h` : 'all time';
+  logger.info(`[chatJob ${jobId}] Started (window: ${windowLabel}, cap: ${row.collect_cap})`);
 
   try {
-    // Fetch posts in the window (capped)
-    const posts = getPostsInWindow(row.window_hours, row.collect_cap);
+    // ── Pass 1: extract FTS5 search keywords from the question via GPT ──────
+    const ftsQuery = await extractKeywordsForSearch(row.question);
+    logger.info(`[chatJob ${jobId}] FTS query: "${ftsQuery}"`);
+
+    let posts;
+
+    if (ftsQuery.trim()) {
+      // ── Pass 2: FTS5 BM25 search — find most relevant posts by content ────
+      const postIds = searchPostsByFts(ftsQuery, row.window_hours, row.collect_cap);
+      posts = postIds
+        .map(id => getPostById(id))
+        .filter((p): p is NonNullable<typeof p> => p != null);
+      logger.info(`[chatJob ${jobId}] FTS found ${postIds.length} posts, loaded ${posts.length}`);
+
+      // If FTS returns very few results, supplement with recent posts from window
+      if (posts.length < 10) {
+        const recent = getPostsInWindow(row.window_hours, row.collect_cap);
+        const existing = new Set(posts.map(p => p.post_id));
+        const extra = recent.filter(p => !existing.has(p.post_id));
+        posts = [...posts, ...extra.slice(0, row.collect_cap - posts.length)];
+        logger.info(`[chatJob ${jobId}] Supplemented with ${extra.length} recent posts`);
+      }
+    } else {
+      // No keywords extracted — fall back to recency-based selection
+      posts = getPostsInWindow(row.window_hours, row.collect_cap);
+      logger.info(`[chatJob ${jobId}] No FTS query, using ${posts.length} recent posts`);
+    }
+
+    if (posts.length === 0) {
+      updateChatJob(jobId, {
+        status: 'completed',
+        answer: 'No posts found in that time window to answer your question.',
+        collected: 0,
+        analysed: 0,
+      });
+      return;
+    }
 
     // Load comments for each post
     const commentsByPost = new Map(
       posts.map(p => [p.post_id, getCommentsByPost(p.post_id)]),
     );
-
-    logger.info(`[chatJob ${jobId}] ${posts.length} posts, asking OpenAI...`);
 
     const { answer, collected, analysed } = await answerQuestion(
       posts,

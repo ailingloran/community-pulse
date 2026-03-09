@@ -76,7 +76,41 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_snapshots_time   ON subreddit_snapshots (taken_at DESC);
     CREATE INDEX IF NOT EXISTS idx_sentiment_time   ON sentiment_reports (taken_at DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_created     ON chat_jobs (created_at DESC);
+
+    -- FTS5 index for fast, relevance-ranked search across posts + comments.
+    -- Stores searchable text plus the parent post_id for result aggregation.
+    CREATE VIRTUAL TABLE IF NOT EXISTS content_fts
+      USING fts5(text, post_id UNINDEXED);
+
+    -- Keep FTS in sync with new posts and comments.
+    -- Updates to score/num_comments don't need FTS sync (text unchanged).
+    CREATE TRIGGER IF NOT EXISTS posts_fts_ai
+      AFTER INSERT ON posts BEGIN
+        INSERT INTO content_fts(text, post_id)
+          VALUES (new.title || ' ' || COALESCE(new.selftext, ''), new.post_id);
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS comments_fts_ai
+      AFTER INSERT ON comments BEGIN
+        INSERT INTO content_fts(text, post_id)
+          VALUES (COALESCE(new.body, ''), new.post_id);
+      END;
   `);
+
+  // Populate FTS index from existing rows on first run after adding FTS support.
+  const { n: postsCount } = db
+    .prepare('SELECT COUNT(*) AS n FROM posts')
+    .get() as { n: number };
+  if (postsCount > 0) {
+    const { n: ftsCount } = db
+      .prepare('SELECT COUNT(*) AS n FROM content_fts')
+      .get() as { n: number };
+    if (ftsCount === 0) {
+      logger.info('[db] FTS index empty — rebuilding from existing posts and comments...');
+      rebuildContentFts();
+      logger.info('[db] FTS rebuild complete');
+    }
+  }
 
   logger.info(`[db] Reddit DB opened at ${config.dbPath}`);
 }
@@ -255,8 +289,13 @@ export function getAllSnapshots(): SnapshotRow[] {
 
 // ── Posts (extended queries) ───────────────────────────────────────────────────
 
-/** Posts created within the last N hours, ordered newest first. */
+/** Posts created within the last N hours (0 = all time), ordered newest first. */
 export function getPostsInWindow(windowHours: number, limit = 500): PostRow[] {
+  if (!windowHours) {
+    return getDb()
+      .prepare(`SELECT * FROM posts ORDER BY created_utc DESC LIMIT ?`)
+      .all(limit) as PostRow[];
+  }
   const since = Math.floor(Date.now() / 1000) - windowHours * 3600;
   return getDb()
     .prepare(`
@@ -266,6 +305,67 @@ export function getPostsInWindow(windowHours: number, limit = 500): PostRow[] {
       LIMIT ?
     `)
     .all(since, limit) as PostRow[];
+}
+
+// ── FTS5 search ────────────────────────────────────────────────────────────────
+
+/**
+ * Rebuild the FTS5 index from scratch using all existing posts and comments.
+ * Called automatically on first startup after FTS support is added.
+ */
+export function rebuildContentFts(): void {
+  getDb().exec(`
+    DELETE FROM content_fts;
+    INSERT INTO content_fts(text, post_id)
+      SELECT title || ' ' || COALESCE(selftext, ''), post_id FROM posts;
+    INSERT INTO content_fts(text, post_id)
+      SELECT COALESCE(body, ''), post_id FROM comments
+      WHERE body IS NOT NULL AND body != '';
+  `);
+}
+
+/**
+ * Search posts using FTS5 BM25 ranking across post text and comments.
+ * Returns up to `limit` post_ids ranked by relevance.
+ * windowHours = 0 means all time (no cutoff).
+ */
+export function searchPostsByFts(
+  ftsQuery:    string,
+  windowHours: number,
+  limit:       number,
+): string[] {
+  if (!ftsQuery.trim()) return [];
+
+  if (!windowHours) {
+    // All time — no time filter needed
+    return (
+      getDb()
+        .prepare(
+          `SELECT post_id, MIN(bm25(content_fts)) AS score
+           FROM content_fts
+           WHERE content_fts MATCH ?
+           GROUP BY post_id
+           ORDER BY score
+           LIMIT ?`,
+        )
+        .all(ftsQuery, limit) as { post_id: string }[]
+    ).map(r => r.post_id);
+  }
+
+  const cutoff = Math.floor(Date.now() / 1000) - windowHours * 3600;
+  return (
+    getDb()
+      .prepare(
+        `SELECT f.post_id, MIN(bm25(f)) AS score
+         FROM content_fts f
+         WHERE f MATCH ?
+           AND f.post_id IN (SELECT post_id FROM posts WHERE created_utc >= ?)
+         GROUP BY f.post_id
+         ORDER BY score
+         LIMIT ?`,
+      )
+      .all(ftsQuery, cutoff, limit) as { post_id: string }[]
+  ).map(r => r.post_id);
 }
 
 export function countAllPosts(): number {
