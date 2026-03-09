@@ -108,9 +108,34 @@ const insertPostStmt = () => getDb().prepare(`
      @flair, @url, @permalink, @selftext, @created_utc, @collected_at)
 `);
 
+const updatePostStmt = () => getDb().prepare(`
+  UPDATE posts
+  SET score = @score, upvote_ratio = @upvote_ratio, num_comments = @num_comments
+  WHERE post_id = @post_id
+`);
+
 export function insertPost(row: PostRow): boolean {
   const result = insertPostStmt().run(row);
+  if (result.changes === 0) {
+    // Post already exists — keep score/upvote_ratio/num_comments current
+    // so the dashboard always reflects the latest Reddit data
+    updatePostStmt().run({
+      score:        row.score,
+      upvote_ratio: row.upvote_ratio,
+      num_comments: row.num_comments,
+      post_id:      row.post_id,
+    });
+  }
   return result.changes > 0;
+}
+
+/** Return post_ids for posts created within the last N days. */
+export function getPostIdsYoungerThan(days: number): string[] {
+  const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
+  return (getDb()
+    .prepare(`SELECT post_id FROM posts WHERE created_utc > ? ORDER BY created_utc DESC`)
+    .all(cutoff) as { post_id: string }[])
+    .map(r => r.post_id);
 }
 
 export function getPostById(postId: string): PostRow | undefined {

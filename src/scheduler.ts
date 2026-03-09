@@ -3,6 +3,7 @@ import { collectNewPosts } from './collectors/postCollector';
 import { collectCommentsForPosts } from './collectors/commentCollector';
 import { collectSubredditStats } from './collectors/statsCollector';
 import { collectSentiment } from './collectors/sentimentCollector';
+import { getPostIdsYoungerThan } from './store/db';
 import { config } from './config';
 import { logger } from './logger';
 
@@ -13,8 +14,17 @@ export function startScheduler(): void {
     logger.info('[scheduler] Post collection triggered');
     try {
       const newPostIds = await collectNewPosts();
-      if (newPostIds.length > 0) {
-        await collectCommentsForPosts(newPostIds);
+
+      // Re-fetch comments for ALL posts younger than 3 days, not just new ones.
+      // Posts accumulate comments over time — without this, a post scraped with
+      // 0 comments would never have its comments updated.
+      // INSERT OR IGNORE on comments means duplicates are safely skipped.
+      const recentPostIds = getPostIdsYoungerThan(3);
+      const toFetch = [...new Set([...newPostIds, ...recentPostIds])];
+
+      if (toFetch.length > 0) {
+        logger.info(`[scheduler] Fetching comments for ${toFetch.length} post(s) (${newPostIds.length} new, ${recentPostIds.length} recent)`);
+        await collectCommentsForPosts(toFetch);
       }
     } catch (err) {
       logger.error('[scheduler] Post collection failed:', err);
