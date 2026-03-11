@@ -11,11 +11,53 @@ import {
   searchPostsByFts,
   ChatJobRow,
 } from '../store/db';
-import { answerQuestion, extractKeywordsForSearch } from '../api/openai';
+import { answerQuestion, extractKeywordsForSearch, SessionTurn } from '../api/openai';
 import { logger } from '../logger';
 
-// Track which jobs are currently executing so we don't delete them mid-run
+// ── Session management ─────────────────────────────────────────────────────────
+
+const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours of inactivity
+
+interface SessionData {
+  turns:  SessionTurn[];
+  expiry: number;
+}
+
+const sessionHistory = new Map<string, SessionData>();
+
+function getSessionTurns(sessionId: string): SessionTurn[] {
+  const session = sessionHistory.get(sessionId);
+  if (!session || session.expiry < Date.now()) {
+    sessionHistory.delete(sessionId);
+    return [];
+  }
+  session.expiry = Date.now() + SESSION_TTL_MS;
+  return [...session.turns];
+}
+
+function appendSessionTurn(sessionId: string, turn: SessionTurn): void {
+  const session = sessionHistory.get(sessionId) ?? { turns: [], expiry: 0 };
+  session.turns.push(turn);
+  // Cap at last 5 turns to avoid context explosion
+  if (session.turns.length > 5) session.turns = session.turns.slice(-5);
+  session.expiry = Date.now() + SESSION_TTL_MS;
+  sessionHistory.set(sessionId, session);
+}
+
+// ── Per-job metadata (session context, held in memory) ────────────────────────
+
+interface JobMeta {
+  sessionId?: string;
+  priorTurns: SessionTurn[];
+}
+
+const jobMeta = new Map<string, JobMeta>();
+
+// ── Track which jobs are currently executing ───────────────────────────────────
+
 const activeJobs = new Set<string>();
+
+// ── Public types ───────────────────────────────────────────────────────────────
 
 export interface ChatJobResponse {
   jobId:      string;
@@ -45,9 +87,12 @@ export function createChatJob(
   question:    string,
   windowHours: number,
   collectCap:  number,
+  sessionId?:  string,
 ): ChatJobResponse {
   const id  = randomUUID();
   const now = new Date().toISOString();
+
+  const priorTurns = sessionId ? getSessionTurns(sessionId) : [];
 
   insertChatJob({
     id,
@@ -59,6 +104,7 @@ export function createChatJob(
     status:       'queued',
   });
 
+  jobMeta.set(id, { sessionId, priorTurns });
   queueChatJob(id);
   return { jobId: id, status: 'queued' };
 }
@@ -87,7 +133,7 @@ export function removeChatJob(jobId: string): { ok: boolean; reason?: string } {
   return { ok: true };
 }
 
-// ── Execution ─────────────────────────────────────────────────────────────────
+// ── Execution ──────────────────────────────────────────────────────────────────
 
 function queueChatJob(jobId: string): void {
   activeJobs.add(jobId);
@@ -97,6 +143,9 @@ function queueChatJob(jobId: string): void {
 async function runChatJob(jobId: string): Promise<void> {
   const row = getChatJob(jobId);
   if (!row) { activeJobs.delete(jobId); return; }
+
+  const meta = jobMeta.get(jobId);
+  const priorTurns = meta?.priorTurns ?? [];
 
   updateChatJob(jobId, { status: 'running' });
   const windowLabel = row.window_hours ? `${row.window_hours}h` : 'all time';
@@ -150,15 +199,22 @@ async function runChatJob(jobId: string): Promise<void> {
       posts,
       commentsByPost,
       row.question,
+      priorTurns,
     );
 
     updateChatJob(jobId, { status: 'completed', answer, collected, analysed });
     logger.info(`[chatJob ${jobId}] Completed (${analysed} items analysed)`);
+
+    // Append to session history after successful completion
+    if (meta?.sessionId) {
+      appendSessionTurn(meta.sessionId, { question: row.question, answer });
+    }
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     updateChatJob(jobId, { status: 'failed', error });
     logger.error(`[chatJob ${jobId}] Failed:`, err);
   } finally {
     activeJobs.delete(jobId);
+    jobMeta.delete(jobId);
   }
 }

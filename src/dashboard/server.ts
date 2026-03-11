@@ -12,6 +12,7 @@ import {
   getLastCollectedAt,
   getPostsPerDay,
   getSentimentReports,
+  getSentimentReportTrend,
 } from '../store/db';
 import { getLastAttemptedAt } from '../store/collectionState';
 import {
@@ -125,6 +126,16 @@ app.get('/api/sentiment', (req, res) => {
   }
 });
 
+app.get('/api/sentiment/trend', (req, res) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+    res.json(getSentimentReportTrend(days));
+  } catch (err) {
+    logger.error('[dashboard] /api/sentiment/trend error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.post('/api/trigger/sentiment', (_req, res) => {
   import('../collectors/sentimentCollector').then(({ collectSentiment }) => {
     collectSentiment().catch((err: unknown) =>
@@ -165,10 +176,11 @@ app.post('/api/chat', (req, res) => {
     return;
   }
   try {
-    const { question, windowHours = 0, collectCap = 300 } = req.body as {
+    const { question, windowHours = 0, collectCap = 300, sessionId } = req.body as {
       question:     string;
       windowHours?: number;
       collectCap?:  number;
+      sessionId?:   string;
     };
     if (!question?.trim()) {
       res.status(400).json({ error: 'question is required' });
@@ -177,7 +189,7 @@ app.post('/api/chat', (req, res) => {
     // windowHours = 0 means "all time" (no cutoff); clamp to [0, 720]
     const cappedHours = Math.min(Math.max(Number(windowHours), 0), 720);
     const cappedCap   = Math.min(Math.max(Number(collectCap) || 300, 10), 2000);
-    const job = createChatJob(question.trim(), cappedHours, cappedCap);
+    const job = createChatJob(question.trim(), cappedHours, cappedCap, sessionId);
     res.status(202).json(job);
   } catch (err) {
     logger.error('[dashboard] POST /api/chat error:', err);

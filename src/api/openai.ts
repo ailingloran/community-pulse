@@ -1,15 +1,26 @@
 import OpenAI from 'openai';
 import { config } from '../config';
 import { logger } from '../logger';
-import { PostRow, CommentRow } from '../store/db';
+
+// ── Shared types ──────────────────────────────────────────────────────────────
+
+export interface PulseItem {
+  text:                string;
+  msgs:                number[];   // 1-based indices into the content array
+  authors?:            number;     // unique Reddit usernames per topic
+  recurring?:          boolean;
+  first_seen_days_ago?: number | null;
+}
 
 export interface PulseResult {
-  topics:      string[];   // up to 5, each with a 1-sentence explanation
-  pain_points: string[];   // 1–4 main complaints
-  positives:   string[];   // 1–3 positive highlights
-  trending:    string;     // single short phrase
-  mood_score:  number;     // 1 (very negative) – 5 (very positive)
-  mood:        string;     // 1-sentence summary with tone
+  topics:           PulseItem[];
+  pain_points:      PulseItem[];
+  positives:        PulseItem[];
+  trending:         string;
+  mood_score:       number;
+  mood:             string;
+  minority_insight?: PulseItem | null;
+  citations?:       Record<number, string>;
 }
 
 export interface ChatResult {
@@ -18,38 +29,54 @@ export interface ChatResult {
   analysed:  number;
 }
 
+export interface SessionTurn {
+  question: string;
+  answer:   string;
+}
+
 function getClient(): OpenAI {
   if (!config.openaiApiKey) throw new Error('OPENAI_API_KEY is not set');
   return new OpenAI({ apiKey: config.openaiApiKey });
 }
 
-function formatPostsForPrompt(
-  posts: PostRow[],
-  commentsByPost: Map<string, CommentRow[]>,
-  maxComments = 5,
-): string {
-  return posts.map(p => {
-    const comments = (commentsByPost.get(p.post_id) ?? [])
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, maxComments);
+// ── Content formatting ────────────────────────────────────────────────────────
 
-    const body = p.selftext ? p.selftext.slice(0, 300) : '';
-    const commentLines = comments
-      .map(c => `  - ${(c.body ?? '').slice(0, 150)} (score: ${c.score ?? 0})`)
-      .join('\n');
+/**
+ * Flatten posts + top comments into a numbered string array.
+ * Index i in the returned array corresponds to 1-based citation index i+1.
+ */
+export function buildContentArray(
+  posts: Array<{ post_id: string; title: string; selftext?: string | null; flair?: string | null; score?: number | null; num_comments?: number | null; author?: string | null }>,
+  commentsByPost: Map<string, Array<{ body?: string | null; author?: string | null; score?: number | null }>>,
+  maxCommentsPerPost = 5,
+): string[] {
+  const content: string[] = [];
 
-    return [
+  for (const p of posts) {
+    const head = [
       `POST: ${p.title}`,
       p.flair    ? `Flair: ${p.flair}` : null,
       `Score: ${p.score ?? 0} | Comments: ${p.num_comments ?? 0}`,
-      body       ? `Body: ${body}` : null,
-      commentLines ? `Top comments:\n${commentLines}` : null,
-      '---',
-    ].filter(Boolean).join('\n');
-  }).join('\n');
+      p.selftext?.trim() ? `Body: ${p.selftext.slice(0, 300)}` : null,
+    ].filter(Boolean).join(' | ');
+
+    content.push(head);
+
+    const comments = (commentsByPost.get(p.post_id) ?? [])
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .slice(0, maxCommentsPerPost);
+
+    for (const c of comments) {
+      if (c.body?.trim()) {
+        content.push(`COMMENT on "${p.title}": ${c.body.slice(0, 200)}`);
+      }
+    }
+  }
+
+  return content;
 }
 
-// ── Keyword extraction (first pass for FTS5 chat search) ─────────────────────
+// ── Keyword extraction ────────────────────────────────────────────────────────
 
 const STOP_WORDS = new Set([
   'what', 'how', 'when', 'where', 'why', 'who', 'which', 'are', 'is',
@@ -57,7 +84,7 @@ const STOP_WORDS = new Set([
   'they', 'their', 'about', 'would', 'could', 'should', 'were', 'will',
   'can', 'did', 'does', 'into', 'your', 'you', 'our', 'more', 'like',
   'than', 'think', 'players', 'player', 'say', 'says', 'said', 'feel',
-  'feel', 'tell', 'give', 'make', 'take', 'want', 'need', 'there',
+  'tell', 'give', 'make', 'take', 'want', 'need', 'there',
   'some', 'other', 'most', 'much', 'many', 'very', 'just', 'also',
   'only', 'but', 'not', 'all', 'any', 'its', 'it', 'be', 'has', 'do',
   'an', 'we', 'in', 'on', 'to', 'of', 'at', 'by', 'posts', 'post',
@@ -81,11 +108,6 @@ function sanitizeFtsKeywords(words: string[]): string {
     .join(' OR ');
 }
 
-/**
- * Use GPT to extract relevant FTS5 search keywords from a question about
- * r/WorldOfWarships Reddit data. Returns a safe FTS5 OR query string.
- * Falls back to stop-word-based extraction if the API is unavailable.
- */
 export async function extractKeywordsForSearch(question: string): Promise<string> {
   const fallback = sanitizeFtsKeywords(basicKeywords(question));
   if (!config.openaiApiKey) return fallback;
@@ -126,39 +148,85 @@ export async function extractKeywordsForSearch(question: string): Promise<string
 
 // ── Sentiment analysis ─────────────────────────────────────────────────────────
 
-export async function analyseCommunityPulse(
-  posts: PostRow[],
-  commentsByPost: Map<string, CommentRow[]>,
-): Promise<PulseResult> {
-  const client = getClient();
-  const text = formatPostsForPrompt(posts, commentsByPost, 5);
+const SYSTEM_PROMPT = `You are a community analyst for r/WorldOfWarships, a naval warfare game subreddit.
+Your task: analyse today's posts and comments to surface what the community is actually discussing.
 
-  const prompt = `You are analysing the r/WorldOfWarships subreddit for community sentiment.
-Below are posts and top comments from the last 24 hours.
-Return ONLY valid JSON matching this exact schema:
+RULES:
+- Group similar phrasings into one item — each item represents a distinct theme, not a list of individual posts
+- Each item MUST have evidence from at least 2 different Reddit users (authors ≥ 2) before inclusion
+  Exception: minority_insight may come from a single insightful post/comment
+- Use prevalence signals in your text: "~N users discuss", "widely posted about", "several comments note"
+- NEVER quote verbatim — describe, paraphrase, synthesise
+- Focus on World of Warships gameplay, ships, balance, events, mechanics — not meta/subreddit discussion
+- Keep each item under 20 words
+
+SCHEMA — return ONLY valid JSON:
 {
-  "topics":      ["string (topic + 1-sentence explanation)", ...],
-  "pain_points": ["string", ...],
-  "positives":   ["string", ...],
-  "trending":    "string",
+  "topics":      [{ "text": "string (≤20 words)", "msgs": [1-based content indices], "authors": number }, ...],
+  "pain_points": [{ "text": "string (≤20 words)", "msgs": [1-based content indices], "authors": number }, ...],
+  "positives":   [{ "text": "string (≤20 words)", "msgs": [1-based content indices], "authors": number }, ...],
+  "trending":    "string (single short phrase)",
   "mood_score":  number,
-  "mood":        "string"
+  "mood":        "string (1-sentence summary with tone)",
+  "minority_insight": { "text": "string", "msgs": [index], "authors": 1 } | null
 }
 
-Subreddit content:
-${text}`;
+Counts: topics 3–5, pain_points 1–4, positives 1–3.
+mood_score: 1=very negative, 2=negative, 3=neutral, 4=positive, 5=very positive.`;
 
-  const response = await client.chat.completions.create({
-    model:           'gpt-4o-mini',
-    temperature:     0.3,
-    max_tokens:      700,
-    response_format: { type: 'json_object' },
-    messages:        [{ role: 'user', content: prompt }],
-  });
+/**
+ * Analyse a flat, numbered content array (built by buildContentArray).
+ * Returns the raw PulseResult; callers add citations and recurring flags.
+ */
+export async function analyseCommunityPulse(content: string[]): Promise<PulseResult | null> {
+  if (!config.openaiApiKey) return null;
 
-  const raw = response.choices[0]?.message?.content ?? '{}';
-  logger.debug('[openai] analyseCommunityPulse raw:', raw);
-  return JSON.parse(raw) as PulseResult;
+  const client = getClient();
+  const numbered = content.map((line, i) => `[${i + 1}] ${line}`).join('\n');
+
+  const userPrompt = `Below are ${content.length} numbered items from r/WorldOfWarships (posts and comments), 1-based index.\n\n${numbered}`;
+
+  try {
+    const response = await client.chat.completions.create({
+      model:           'gpt-4o-mini',
+      temperature:     0.3,
+      max_tokens:      1200,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user',   content: userPrompt },
+      ],
+    });
+
+    const raw = response.choices[0]?.message?.content ?? '{}';
+    logger.debug('[openai] analyseCommunityPulse raw:', raw);
+
+    const parsed = JSON.parse(raw) as Partial<PulseResult>;
+
+    // Normalise: ensure all array fields are arrays of PulseItem
+    const normaliseItems = (arr: unknown): PulseItem[] => {
+      if (!Array.isArray(arr)) return [];
+      return arr.map(item => typeof item === 'string'
+        ? { text: item, msgs: [], authors: undefined }
+        : { text: String(item?.text ?? ''), msgs: Array.isArray(item?.msgs) ? item.msgs as number[] : [], authors: item?.authors as number | undefined },
+      );
+    };
+
+    return {
+      topics:           normaliseItems(parsed.topics),
+      pain_points:      normaliseItems(parsed.pain_points),
+      positives:        normaliseItems(parsed.positives),
+      trending:         typeof parsed.trending === 'string' ? parsed.trending : '',
+      mood_score:       typeof parsed.mood_score === 'number' ? parsed.mood_score : 3,
+      mood:             typeof parsed.mood === 'string' ? parsed.mood : '',
+      minority_insight: parsed.minority_insight
+        ? normaliseItems([parsed.minority_insight])[0] ?? null
+        : null,
+    };
+  } catch (err) {
+    logger.error('[openai] analyseCommunityPulse failed:', err);
+    return null;
+  }
 }
 
 // ── Question answering ────────────────────────────────────────────────────────
@@ -166,9 +234,10 @@ ${text}`;
 const MAX_ITEMS = 4500;
 
 export async function answerQuestion(
-  posts: PostRow[],
-  commentsByPost: Map<string, CommentRow[]>,
+  posts: Array<{ post_id: string; title: string; flair?: string | null; score?: number | null; selftext?: string | null }>,
+  commentsByPost: Map<string, Array<{ body?: string | null }>>,
   question: string,
+  priorTurns: SessionTurn[] = [],
 ): Promise<ChatResult> {
   const client = getClient();
 
@@ -191,21 +260,29 @@ export async function answerQuestion(
 
   const dataText = sampled.join('\n---\n');
 
-  const prompt = `You are a community analyst for r/WorldOfWarships, a naval warfare game.
+  const systemMsg = `You are a community analyst for r/WorldOfWarships, a naval warfare game.
 Use the posts and comments below to answer the question.
 Be specific — cite post titles or comment details where relevant.
 If the data is insufficient to answer confidently, say so.
 
-Question: ${question}
-
 Data:
 ${dataText}`;
+
+  // Build message history: system + prior turns + current question
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemMsg },
+    ...priorTurns.flatMap(t => ([
+      { role: 'user' as const,      content: t.question },
+      { role: 'assistant' as const, content: t.answer   },
+    ])),
+    { role: 'user', content: question },
+  ];
 
   const response = await client.chat.completions.create({
     model:       'gpt-4o-mini',
     temperature: 0.4,
-    max_tokens:  800,
-    messages:    [{ role: 'user', content: prompt }],
+    max_tokens:  900,
+    messages,
   });
 
   const answer = response.choices[0]?.message?.content ?? '(No response)';
