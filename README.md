@@ -64,7 +64,7 @@ npm install
 Create `.env` in the project root:
 
 ```bash
-nano /home/kuba/apps/wows-reddit/.env
+nano /home/kuba/community-pulse/.env
 ```
 
 ```env
@@ -102,7 +102,7 @@ STATS_POLL_INTERVAL_MIN=60
 ## Step 3 — Build & First Run
 
 ```bash
-cd /home/kuba/apps/wows-reddit
+cd /home/kuba/community-pulse
 
 # Compile TypeScript
 npm run build
@@ -128,7 +128,7 @@ pm2 startup
 
 # Verify
 pm2 status
-pm2 logs wows-reddit
+pm2 logs community-pulse
 ```
 
 ---
@@ -153,17 +153,17 @@ git push
 **On the VPS (SSH):**
 
 ```bash
-cd /home/kuba/apps/wows-reddit
+cd /home/kuba/community-pulse
 
 # Pull latest code
 git pull
 
 # Rebuild and restart
-npm run build && pm2 restart wows-reddit
+npm run build && pm2 restart community-pulse
 
 # Or step by step:
 npm run build
-pm2 restart wows-reddit
+pm2 restart community-pulse
 ```
 
 ### Checking status and logs
@@ -173,26 +173,26 @@ pm2 restart wows-reddit
 pm2 status
 
 # Follow live logs
-pm2 logs wows-reddit
+pm2 logs community-pulse
 
 # Last 100 lines
-pm2 logs wows-reddit --lines 100
+pm2 logs community-pulse --lines 100
 
 # Clear log files
-pm2 flush wows-reddit
+pm2 flush community-pulse
 ```
 
 ### Restarting, stopping, reloading
 
 ```bash
 # Graceful restart
-pm2 restart wows-reddit
+pm2 restart community-pulse
 
 # Stop
-pm2 stop wows-reddit
+pm2 stop community-pulse
 
 # Start again
-pm2 start wows-reddit
+pm2 start community-pulse
 ```
 
 ### Triggering Community Pulse manually
@@ -219,11 +219,11 @@ sqlite> .quit
 ### Updating environment variables
 
 ```bash
-nano /home/kuba/apps/wows-reddit/.env
+nano /home/kuba/community-pulse/.env
 # Edit values, save (Ctrl+X, Y, Enter)
 
 # Rebuild and restart to apply
-npm run build && pm2 restart wows-reddit
+npm run build && pm2 restart community-pulse
 ```
 
 ---
@@ -286,7 +286,7 @@ wows-reddit/
 ### Bot not collecting posts
 
 ```bash
-pm2 logs wows-reddit --lines 50
+pm2 logs community-pulse --lines 50
 ```
 
 Check for Arctic Shift API errors. The collector retries automatically every `POST_POLL_INTERVAL_MIN` minutes.
@@ -295,13 +295,13 @@ Check for Arctic Shift API errors. The collector retries automatically every `PO
 
 - Check that `OPENAI_API_KEY` is set in `.env`
 - Verify `SENTIMENT_HOUR` matches the expected UTC hour
-- Look for errors in `pm2 logs wows-reddit`
+- Look for errors in `pm2 logs community-pulse`
 
 ### API returns 401
 
 - The `Authorization: Bearer` header must exactly match `REDDIT_DASHBOARD_SECRET` in `.env`
 - Check that the matching `REDDIT_SECRET` in the frontend `.env` is the same value
-- Rebuild and restart after any `.env` change: `npm run build && pm2 restart wows-reddit`
+- Rebuild and restart after any `.env` change: `npm run build && pm2 restart community-pulse`
 
 ### Database file not found
 
