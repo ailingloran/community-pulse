@@ -153,7 +153,6 @@ Your task: analyse today's posts and comments to surface what the community is a
 RULES:
 - Group similar phrasings into one item — each item represents a distinct theme, not a list of individual posts
 - Each item MUST have evidence from at least 2 different Reddit users (authors ≥ 2) before inclusion
-  Exception: minority_insight may come from a single insightful post/comment
 - Use prevalence signals in your text: "~N users discuss", "widely posted about", "several comments note"
 - NEVER quote verbatim — describe, paraphrase, synthesise
 - Focus on World of Warships gameplay, ships, balance, events, mechanics — not meta/subreddit discussion
