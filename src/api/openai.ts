@@ -13,14 +13,13 @@ export interface PulseItem {
 }
 
 export interface PulseResult {
-  topics:           PulseItem[];
-  pain_points:      PulseItem[];
-  positives:        PulseItem[];
-  trending:         string;
-  mood_score:       number;
-  mood:             string;
-  minority_insight?: PulseItem | null;
-  citations?:       Record<number, string>;
+  topics:      PulseItem[];
+  pain_points: PulseItem[];
+  positives:   PulseItem[];
+  trending:    string;
+  mood_score:  number;
+  mood:        string;
+  citations?:  Record<number, string>;
 }
 
 export interface ChatResult {
@@ -162,16 +161,15 @@ RULES:
 
 SCHEMA — return ONLY valid JSON:
 {
-  "topics":      [{ "text": "string (≤20 words)", "msgs": [1-based content indices], "authors": number }, ...],
-  "pain_points": [{ "text": "string (≤20 words)", "msgs": [1-based content indices], "authors": number }, ...],
-  "positives":   [{ "text": "string (≤20 words)", "msgs": [1-based content indices], "authors": number }, ...],
+  "topics":      [{ "text": "string", "msgs": [1-based content indices], "authors": number }, ...],
+  "pain_points": [{ "text": "string", "msgs": [1-based content indices], "authors": number }, ...],
+  "positives":   [{ "text": "string", "msgs": [1-based content indices], "authors": number }, ...],
   "trending":    "string (single short phrase)",
   "mood_score":  number,
-  "mood":        "string (1-sentence summary with tone)",
-  "minority_insight": { "text": "string", "msgs": [index], "authors": 1 } | null
+  "mood":        "string (1-sentence summary with tone)"
 }
 
-Counts: topics 3–5, pain_points 1–4, positives 1–3.
+Counts: topics 3–5, pain_points 1–6, positives 1–5.
 mood_score: 1=very negative, 2=negative, 3=neutral, 4=positive, 5=very positive.`;
 
 /**
@@ -190,7 +188,7 @@ export async function analyseCommunityPulse(content: string[]): Promise<PulseRes
     const response = await client.chat.completions.create({
       model:           'gpt-4o-mini',
       temperature:     0.3,
-      max_tokens:      1200,
+      max_tokens:      1600,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -219,9 +217,6 @@ export async function analyseCommunityPulse(content: string[]): Promise<PulseRes
       trending:         typeof parsed.trending === 'string' ? parsed.trending : '',
       mood_score:       typeof parsed.mood_score === 'number' ? parsed.mood_score : 3,
       mood:             typeof parsed.mood === 'string' ? parsed.mood : '',
-      minority_insight: parsed.minority_insight
-        ? normaliseItems([parsed.minority_insight])[0] ?? null
-        : null,
     };
   } catch (err) {
     logger.error('[openai] analyseCommunityPulse failed:', err);

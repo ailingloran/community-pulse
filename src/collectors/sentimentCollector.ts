@@ -63,22 +63,35 @@ function markRecurring(currentItems: PulseItem[], previousReports: SentimentRow[
 
 /**
  * Build a citations map: 1-based content index → content string.
- * Only stores content that is actually cited in the pulse result.
+ *
+ * Only stores a citation if the cited content contains at least one significant
+ * word from the item's text. This filters out GPT hallucinated indices where
+ * the cited content is unrelated to the topic it supposedly supports.
  */
 function buildCitations(pulse: PulseResult, content: string[]): Record<number, string> {
-  const citedIndices = new Set<number>();
+  const citations: Record<number, string> = {};
   const allItems: PulseItem[] = [...pulse.topics, ...pulse.pain_points, ...pulse.positives];
-  if (pulse.minority_insight) allItems.push(pulse.minority_insight);
 
   for (const item of allItems) {
-    for (const idx of item.msgs) citedIndices.add(idx);
+    const itemWords = extractSignificantWords(item.text);
+    const seenIdx = new Set<number>();
+
+    for (const idx of item.msgs) {
+      if (seenIdx.has(idx)) continue; // skip duplicate indices from GPT
+      seenIdx.add(idx);
+
+      const text = content[idx - 1]; // msgs are 1-based
+      if (!text) continue;
+
+      // Only keep the citation if the content shares at least one significant
+      // word with the item. Filters irrelevant GPT hallucinations.
+      const textLower = text.toLowerCase();
+      if (itemWords.length === 0 || itemWords.some(w => textLower.includes(w))) {
+        citations[idx] = text;
+      }
+    }
   }
 
-  const citations: Record<number, string> = {};
-  for (const idx of citedIndices) {
-    const text = content[idx - 1]; // msgs are 1-based
-    if (text) citations[idx] = text;
-  }
   return citations;
 }
 
