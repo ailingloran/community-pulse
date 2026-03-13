@@ -54,6 +54,7 @@ export function buildContentArray(
   for (const p of posts) {
     const head = [
       `POST: ${p.title}`,
+      p.author   ? `Author: ${p.author}` : null,
       p.flair    ? `Flair: ${p.flair}` : null,
       `Score: ${p.score ?? 0} | Comments: ${p.num_comments ?? 0}`,
       p.selftext?.trim() ? `Body: ${p.selftext.slice(0, 300)}` : null,
@@ -67,7 +68,8 @@ export function buildContentArray(
 
     for (const c of comments) {
       if (c.body?.trim()) {
-        content.push(`COMMENT on "${p.title}": ${c.body.slice(0, 200)}`);
+        const authorPart = c.author ? `Author: ${c.author} | ` : '';
+        content.push(`COMMENT on "${p.title}" | ${authorPart}${c.body.slice(0, 200)}`);
       }
     }
   }
@@ -156,7 +158,7 @@ RULES:
 - Use prevalence signals in your text: "~N users discuss", "widely posted about", "several comments note"
 - NEVER quote verbatim — describe, paraphrase, synthesise
 - Focus on World of Warships gameplay, ships, balance, events, mechanics — not meta/subreddit discussion
-- Keep each item under 20 words
+- Be specific and analytical — name the actual ships, mechanics, and issues players raised
 
 SCHEMA — return ONLY valid JSON:
 {
@@ -185,8 +187,8 @@ export async function analyseCommunityPulse(content: string[]): Promise<PulseRes
 
   try {
     const response = await client.chat.completions.create({
-      model:           'gpt-4o-mini',
-      temperature:     0.3,
+      model:           'gpt-4o',
+      temperature:     0,
       max_tokens:      1600,
       response_format: { type: 'json_object' },
       messages: [
@@ -196,7 +198,7 @@ export async function analyseCommunityPulse(content: string[]): Promise<PulseRes
     });
 
     const raw = response.choices[0]?.message?.content ?? '{}';
-    logger.debug('[openai] analyseCommunityPulse raw:', raw);
+    logger.info('[openai] analyseCommunityPulse raw:', raw);
 
     const parsed = JSON.parse(raw) as Partial<PulseResult>;
 

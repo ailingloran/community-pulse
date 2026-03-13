@@ -80,13 +80,18 @@ function buildCitations(pulse: PulseResult, content: string[]): Record<number, s
       if (seenIdx.has(idx)) continue; // skip duplicate indices from GPT
       seenIdx.add(idx);
 
+      if (idx < 1 || idx > content.length) {
+        logger.warn(`[sentiment] Citation index ${idx} out of bounds (max ${content.length}) for item: "${item.text.slice(0, 50)}"`);
+        continue;
+      }
+
       const text = content[idx - 1]; // msgs are 1-based
       if (!text) continue;
 
-      // Only keep the citation if the content shares at least one significant
-      // word with the item. Filters irrelevant GPT hallucinations.
+      // Require at least 2 significant keyword matches to filter GPT hallucinations.
       const textLower = text.toLowerCase();
-      if (itemWords.length === 0 || itemWords.some(w => textLower.includes(w))) {
+      const matchCount = itemWords.filter(w => textLower.includes(w)).length;
+      if (itemWords.length === 0 || matchCount >= 2) {
         citations[idx] = text;
       }
     }
