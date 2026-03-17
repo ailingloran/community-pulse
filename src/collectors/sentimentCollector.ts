@@ -64,8 +64,8 @@ function markRecurring(currentItems: PulseItem[], previousReports: SentimentRow[
 /**
  * Build a citations map: 1-based content index → content string.
  *
- * Only stores a citation if the cited content contains at least one significant
- * word from the item's text. This filters out GPT hallucinated indices where
+ * Only stores a citation if the cited content contains at least 2 significant
+ * words from the item's text. This filters out GPT hallucinated indices where
  * the cited content is unrelated to the topic it supposedly supports.
  */
 function buildCitations(pulse: PulseResult, content: string[]): Record<number, string> {
@@ -143,8 +143,9 @@ export async function collectSentiment(): Promise<void> {
 
   logger.info(`[sentiment] Analysing ${posts.length} posts with OpenAI...`);
 
-  // Build flat numbered content array for GPT + citation mapping
-  const content = buildContentArray(posts, commentsByPost, 8);
+  // Build flat numbered content array for GPT.
+  // Authors are replaced with UserN labels; authorByIndex lets us verify counts.
+  const { content, authorByIndex } = buildContentArray(posts, commentsByPost, 8);
 
   try {
     const pulse = await analyseCommunityPulse(content);
@@ -152,6 +153,27 @@ export async function collectSentiment(): Promise<void> {
       logger.error('[sentiment] OpenAI analysis returned null — skipping');
       return;
     }
+
+    // ── Verify author counts from cited content indices ────────────────────
+    // Replace GPT's self-reported authors with a count derived from the actual
+    // UserN-labelled entries that GPT cited. This eliminates hallucinated counts.
+    for (const item of [...pulse.topics, ...pulse.pain_points, ...pulse.positives]) {
+      const uniqueAuthors = new Set<string>();
+      for (const idx of item.msgs) {
+        const author = authorByIndex.get(idx);
+        if (author) uniqueAuthors.add(author);
+      }
+      item.authors = uniqueAuthors.size;
+    }
+
+    // Filter out items with fewer than 2 verified unique authors
+    pulse.topics      = pulse.topics.filter(item => (item.authors ?? 0) >= 2);
+    pulse.pain_points = pulse.pain_points.filter(item => (item.authors ?? 0) >= 2);
+    pulse.positives   = pulse.positives.filter(item => (item.authors ?? 0) >= 2);
+
+    logger.info(
+      `[sentiment] After author verification: topics=${pulse.topics.length} pain=${pulse.pain_points.length} positives=${pulse.positives.length}`,
+    );
 
     // Enrich: citations
     pulse.citations = buildCitations(pulse, content);

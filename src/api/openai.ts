@@ -7,7 +7,7 @@ import { logger } from '../logger';
 export interface PulseItem {
   text:                string;
   msgs:                number[];   // 1-based indices into the content array
-  authors?:            number;     // unique Reddit usernames per topic
+  authors?:            number;     // unique Reddit usernames per topic (verified post-GPT)
   recurring?:          boolean;
   first_seen_days_ago?: number | null;
 }
@@ -33,6 +33,13 @@ export interface SessionTurn {
   answer:   string;
 }
 
+/** Returned by buildContentArray — content plus a map for post-GPT author verification. */
+export interface ContentArrayResult {
+  content:       string[];
+  /** 1-based content index → Reddit username (used to verify GPT's author counts) */
+  authorByIndex: Map<number, string>;
+}
+
 function getClient(): OpenAI {
   if (!config.openaiApiKey) throw new Error('OPENAI_API_KEY is not set');
   return new OpenAI({ apiKey: config.openaiApiKey });
@@ -42,25 +49,53 @@ function getClient(): OpenAI {
 
 /**
  * Flatten posts + top comments into a numbered string array.
- * Index i in the returned array corresponds to 1-based citation index i+1.
+ * Each entry is prefixed with a unique "UserN:" label derived from the author.
+ * The returned authorByIndex map lets callers verify GPT's author counts
+ * after the fact by extracting UserN prefixes from the cited indices.
+ *
+ * Index i in content corresponds to 1-based citation index i+1.
  */
 export function buildContentArray(
   posts: Array<{ post_id: string; title: string; selftext?: string | null; flair?: string | null; score?: number | null; num_comments?: number | null; author?: string | null }>,
   commentsByPost: Map<string, Array<{ body?: string | null; author?: string | null; score?: number | null }>>,
   maxCommentsPerPost = 8,
-): string[] {
+): ContentArrayResult {
+  // First pass: collect all unique authors and assign UserN labels
+  const userLabelMap = new Map<string, string>(); // username → UserN
+  let labelCounter = 0;
+
+  const getLabel = (author: string | null | undefined): string => {
+    if (!author) return 'UserX';
+    if (!userLabelMap.has(author)) {
+      labelCounter++;
+      userLabelMap.set(author, `User${labelCounter}`);
+    }
+    return userLabelMap.get(author)!;
+  };
+
+  // Pre-scan all authors so labels are assigned in a consistent order
+  for (const p of posts) {
+    getLabel(p.author);
+    for (const c of (commentsByPost.get(p.post_id) ?? [])) {
+      getLabel(c.author);
+    }
+  }
+
   const content: string[] = [];
+  const authorByIndex = new Map<number, string>(); // 1-based → username
 
   for (const p of posts) {
+    const label = getLabel(p.author);
     const head = [
       `POST: ${p.title}`,
-      p.author   ? `Author: ${p.author}` : null,
       p.flair    ? `Flair: ${p.flair}` : null,
       `Score: ${p.score ?? 0} | Comments: ${p.num_comments ?? 0}`,
       p.selftext?.trim() ? `Body: ${p.selftext.slice(0, 600)}` : null,
     ].filter(Boolean).join(' | ');
 
-    content.push(head);
+    const idx = content.length + 1; // 1-based
+    content.push(`${label}: ${head}`);
+    if (p.author) authorByIndex.set(idx, p.author);
 
     const comments = (commentsByPost.get(p.post_id) ?? [])
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
@@ -68,13 +103,15 @@ export function buildContentArray(
 
     for (const c of comments) {
       if (c.body?.trim()) {
-        const authorPart = c.author ? `Author: ${c.author} | ` : '';
-        content.push(`COMMENT on "${p.title}" | ${authorPart}${c.body.slice(0, 400)}`);
+        const commentLabel = getLabel(c.author);
+        const commentIdx = content.length + 1;
+        content.push(`${commentLabel}: COMMENT on "${p.title}" | ${c.body.slice(0, 400)}`);
+        if (c.author) authorByIndex.set(commentIdx, c.author);
       }
     }
   }
 
-  return content;
+  return { content, authorByIndex };
 }
 
 // ── Keyword extraction ────────────────────────────────────────────────────────
@@ -152,9 +189,12 @@ export async function extractKeywordsForSearch(question: string): Promise<string
 const SYSTEM_PROMPT = `You are a community analyst for r/WorldOfWarships, a naval warfare game subreddit.
 Your task: analyse today's posts and comments to surface what the community is actually discussing.
 
+Each post and comment is prefixed with a unique author label (User1, User2, ...) that identifies who wrote it.
+Use these labels to track which themes come from multiple distinct users.
+
 RULES:
 - Group similar phrasings into one item — each item represents a distinct theme, not a list of individual posts
-- Each item MUST have evidence from at least 2 different Reddit users (authors ≥ 2) before inclusion
+- Only include an item if you can cite evidence from at least 2 different UserN labels
 - Use prevalence signals in your text: "~N users discuss", "widely posted about", "several comments note"
 - NEVER quote verbatim — describe, paraphrase, synthesise
 - Focus on World of Warships gameplay, ships, balance, events, mechanics — not meta/subreddit discussion
@@ -165,9 +205,9 @@ RULES:
 
 SCHEMA — return ONLY valid JSON:
 {
-  "topics":      [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices], "authors": number }, ...],
-  "pain_points": [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices], "authors": number }, ...],
-  "positives":   [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices], "authors": number }, ...],
+  "topics":      [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices] }, ...],
+  "pain_points": [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices] }, ...],
+  "positives":   [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices] }, ...],
   "trending":    "string (descriptive phrase with context, not a bare topic name)",
   "mood_score":  number,
   "mood":        "string (2-3 sentences)"
@@ -178,7 +218,8 @@ mood_score: 1=very negative, 2=negative, 3=neutral, 4=positive, 5=very positive.
 
 /**
  * Analyse a flat, numbered content array (built by buildContentArray).
- * Returns the raw PulseResult; callers add citations and recurring flags.
+ * Returns the raw PulseResult; callers add citations, verify author counts,
+ * and add recurring flags.
  */
 export async function analyseCommunityPulse(content: string[]): Promise<PulseResult | null> {
   if (!config.openaiApiKey) return null;
@@ -222,12 +263,12 @@ export async function analyseCommunityPulse(content: string[]): Promise<PulseRes
     };
 
     return {
-      topics:           normaliseItems(parsed.topics),
-      pain_points:      normaliseItems(parsed.pain_points),
-      positives:        normaliseItems(parsed.positives),
-      trending:         typeof parsed.trending === 'string' ? parsed.trending : '',
-      mood_score:       typeof parsed.mood_score === 'number' ? parsed.mood_score : 3,
-      mood:             typeof parsed.mood === 'string' ? parsed.mood : '',
+      topics:      normaliseItems(parsed.topics),
+      pain_points: normaliseItems(parsed.pain_points),
+      positives:   normaliseItems(parsed.positives),
+      trending:    typeof parsed.trending === 'string' ? parsed.trending : '',
+      mood_score:  typeof parsed.mood_score === 'number' ? parsed.mood_score : 3,
+      mood:        typeof parsed.mood === 'string' ? parsed.mood : '',
     };
   } catch (err) {
     logger.error('[openai] analyseCommunityPulse failed:', err);
