@@ -135,7 +135,7 @@ export async function collectSentiment(): Promise<void> {
         SELECT * FROM comments
         WHERE post_id = ?
         ORDER BY score DESC
-        LIMIT 10
+        LIMIT 15
       `)
       .all(p.post_id) as CommentRow[];
     commentsByPost.set(p.post_id, comments);
@@ -144,7 +144,7 @@ export async function collectSentiment(): Promise<void> {
   logger.info(`[sentiment] Analysing ${posts.length} posts with OpenAI...`);
 
   // Build flat numbered content array for GPT + citation mapping
-  const content = buildContentArray(posts, commentsByPost, 5);
+  const content = buildContentArray(posts, commentsByPost, 8);
 
   try {
     const pulse = await analyseCommunityPulse(content);

@@ -47,7 +47,7 @@ function getClient(): OpenAI {
 export function buildContentArray(
   posts: Array<{ post_id: string; title: string; selftext?: string | null; flair?: string | null; score?: number | null; num_comments?: number | null; author?: string | null }>,
   commentsByPost: Map<string, Array<{ body?: string | null; author?: string | null; score?: number | null }>>,
-  maxCommentsPerPost = 5,
+  maxCommentsPerPost = 8,
 ): string[] {
   const content: string[] = [];
 
@@ -57,7 +57,7 @@ export function buildContentArray(
       p.author   ? `Author: ${p.author}` : null,
       p.flair    ? `Flair: ${p.flair}` : null,
       `Score: ${p.score ?? 0} | Comments: ${p.num_comments ?? 0}`,
-      p.selftext?.trim() ? `Body: ${p.selftext.slice(0, 300)}` : null,
+      p.selftext?.trim() ? `Body: ${p.selftext.slice(0, 600)}` : null,
     ].filter(Boolean).join(' | ');
 
     content.push(head);
@@ -69,7 +69,7 @@ export function buildContentArray(
     for (const c of comments) {
       if (c.body?.trim()) {
         const authorPart = c.author ? `Author: ${c.author} | ` : '';
-        content.push(`COMMENT on "${p.title}" | ${authorPart}${c.body.slice(0, 200)}`);
+        content.push(`COMMENT on "${p.title}" | ${authorPart}${c.body.slice(0, 400)}`);
       }
     }
   }
@@ -158,16 +158,19 @@ RULES:
 - Use prevalence signals in your text: "~N users discuss", "widely posted about", "several comments note"
 - NEVER quote verbatim — describe, paraphrase, synthesise
 - Focus on World of Warships gameplay, ships, balance, events, mechanics — not meta/subreddit discussion
-- Be specific and analytical — name the actual ships, mechanics, and issues players raised
+- Be specific and analytical — name the actual ships, mechanics, events, and issues players raised
+- Each item's "text" MUST be 2–4 sentences: start with what the theme is, then explain why players care or what specifically they said, and include any concrete details (ship names, numbers, patch context). One-liners are not acceptable.
+- The "mood" field must be 2–3 sentences covering the overall atmosphere, what is driving it, and any notable contrasts between positive and negative currents.
+- The "trending" field should be a descriptive phrase that includes why the topic is gaining traction — not just a bare noun.
 
 SCHEMA — return ONLY valid JSON:
 {
-  "topics":      [{ "text": "string", "msgs": [1-based content indices], "authors": number }, ...],
-  "pain_points": [{ "text": "string", "msgs": [1-based content indices], "authors": number }, ...],
-  "positives":   [{ "text": "string", "msgs": [1-based content indices], "authors": number }, ...],
-  "trending":    "string (single short phrase)",
+  "topics":      [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices], "authors": number }, ...],
+  "pain_points": [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices], "authors": number }, ...],
+  "positives":   [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices], "authors": number }, ...],
+  "trending":    "string (descriptive phrase with context, not a bare topic name)",
   "mood_score":  number,
-  "mood":        "string (1-sentence summary with tone)"
+  "mood":        "string (2-3 sentences)"
 }
 
 Counts: topics 3–5, pain_points 1–6, positives 1–5.
@@ -187,18 +190,25 @@ export async function analyseCommunityPulse(content: string[]): Promise<PulseRes
 
   try {
     const response = await client.chat.completions.create({
-      model:           'gpt-4o',
-      temperature:     0,
-      max_tokens:      1600,
-      response_format: { type: 'json_object' },
+      model:                 'gpt-5.1',
+      max_completion_tokens: 16000,
+      response_format:       { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user',   content: userPrompt },
       ],
     });
 
-    const raw = response.choices[0]?.message?.content ?? '{}';
-    logger.info('[openai] analyseCommunityPulse raw:', raw);
+    const finish = response.choices[0]?.finish_reason;
+    logger.info(`[openai] analyseCommunityPulse finish_reason=${finish}`);
+
+    const raw = response.choices[0]?.message?.content ?? '';
+    if (!raw) {
+      logger.error('[openai] analyseCommunityPulse: empty response from model');
+      return null;
+    }
+
+    logger.info('[openai] analyseCommunityPulse raw:', raw.slice(0, 500));
 
     const parsed = JSON.parse(raw) as Partial<PulseResult>;
 
@@ -241,10 +251,10 @@ export async function answerQuestion(
   const items: string[] = [];
   for (const p of posts) {
     items.push(
-      `POST: ${p.title}\nFlair: ${p.flair ?? 'none'}\nScore: ${p.score ?? 0}\n${(p.selftext ?? '').slice(0, 200)}`,
+      `POST: ${p.title}\nFlair: ${p.flair ?? 'none'}\nScore: ${p.score ?? 0}\n${(p.selftext ?? '').slice(0, 300)}`,
     );
     for (const c of (commentsByPost.get(p.post_id) ?? [])) {
-      items.push(`COMMENT on "${p.title}": ${(c.body ?? '').slice(0, 200)}`);
+      items.push(`COMMENT on "${p.title}": ${(c.body ?? '').slice(0, 300)}`);
     }
   }
 
@@ -257,9 +267,10 @@ export async function answerQuestion(
   const dataText = sampled.join('\n---\n');
 
   const systemMsg = `You are a community analyst for r/WorldOfWarships, a naval warfare game.
-Use the posts and comments below to answer the question.
-Be specific — cite post titles or comment details where relevant.
-If the data is insufficient to answer confidently, say so.
+Use the posts and comments below to answer the question thoroughly.
+Be specific — cite post titles, comment details, ship names, and game mechanics where relevant.
+Give a detailed answer that covers different perspectives if they exist in the data.
+If the data is insufficient to answer confidently, say so clearly.
 
 Data:
 ${dataText}`;
@@ -275,9 +286,9 @@ ${dataText}`;
   ];
 
   const response = await client.chat.completions.create({
-    model:       'gpt-4o-mini',
-    temperature: 0.4,
-    max_tokens:  900,
+    model:       'gpt-4o',
+    temperature: 0.3,
+    max_tokens:  2000,
     messages,
   });
 
