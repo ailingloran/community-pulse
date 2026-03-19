@@ -156,7 +156,7 @@ app.get('/api/settings', (_req, res) => {
     sentiment_hour:     parseInt(getSetting('sentiment_hour', String(config.sentimentHour)), 10),
     analysis_days:      parseInt(getSetting('analysis_days', '1'), 10),
     max_posts:          parseInt(getSetting('max_posts', '50'), 10),
-    max_comments:       parseInt(getSetting('max_comments', '15'), 10),
+    max_comments:       parseInt(getSetting('max_comments', '30'), 10),
   });
 });
 
@@ -178,7 +178,7 @@ app.post('/api/settings', (req, res) => {
       setSetting('max_posts', String(Math.min(200, Math.max(10, Number(body.max_posts)))));
     }
     if ('max_comments' in body) {
-      setSetting('max_comments', String(Math.min(30, Math.max(1, Number(body.max_comments)))));
+      setSetting('max_comments', String(Math.min(200, Math.max(1, Number(body.max_comments)))));
     }
     res.json({ ok: true });
   } catch (err) {
