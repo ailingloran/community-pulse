@@ -195,22 +195,23 @@ Use these labels to track which themes come from multiple distinct users.
 RULES:
 - Group similar phrasings into one item — each item represents a distinct theme, not a list of individual posts
 - Only include an item if you can cite evidence from at least 2 different UserN labels
-- Use prevalence signals in your text: "~N users discuss", "widely posted about", "several comments note"
 - NEVER quote verbatim — describe, paraphrase, synthesise
 - Focus on World of Warships gameplay, ships, balance, events, mechanics — not meta/subreddit discussion
-- Be specific and analytical — name the actual ships, mechanics, events, and issues players raised
-- Each item's "text" MUST be 2–4 sentences: start with what the theme is, then explain why players care or what specifically they said, and include any concrete details (ship names, numbers, patch context). One-liners are not acceptable.
-- The "mood" field must be 2–3 sentences covering the overall atmosphere, what is driving it, and any notable contrasts between positive and negative currents.
-- The "trending" field should be a descriptive phrase that includes why the topic is gaining traction — not just a bare noun.
+- Be specific — name actual ships, mechanics, events, and game modes players raised
+- Each item's "text" must follow this exact format: "[Topic name] (~N users) — [one concise clause describing what they said]"
+  Example: "Submarine concealment and homing torpedoes (~15 users) — debating whether DDs have enough counter-play tools against strong sub mobility"
+  Keep it to ONE line. Do not write sentences. Do not explain further.
+- The "trending" field: one short phrase describing the spike topic and why it gained traction
+- The "mood" field: one sentence covering overall atmosphere and what is driving it
 
 SCHEMA — return ONLY valid JSON:
 {
-  "topics":      [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices] }, ...],
-  "pain_points": [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices] }, ...],
-  "positives":   [{ "text": "string (2-4 sentences)", "msgs": [1-based content indices] }, ...],
-  "trending":    "string (descriptive phrase with context, not a bare topic name)",
+  "topics":      [{ "text": "string", "msgs": [1-based content indices] }, ...],
+  "pain_points": [{ "text": "string", "msgs": [1-based content indices] }, ...],
+  "positives":   [{ "text": "string", "msgs": [1-based content indices] }, ...],
+  "trending":    "string",
   "mood_score":  number,
-  "mood":        "string (2-3 sentences)"
+  "mood":        "string"
 }
 
 Counts: topics 3–5, pain_points 1–6, positives 1–5.
