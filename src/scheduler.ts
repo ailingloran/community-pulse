@@ -1,11 +1,30 @@
-import cron from 'node-cron';
+import cron, { ScheduledTask } from 'node-cron';
 import { collectNewPosts } from './collectors/postCollector';
 import { collectCommentsForPosts } from './collectors/commentCollector';
 import { collectSubredditStats } from './collectors/statsCollector';
 import { collectSentiment } from './collectors/sentimentCollector';
-import { getPostIdsYoungerThan } from './store/db';
+import { getPostIdsYoungerThan, getSetting } from './store/db';
 import { config } from './config';
 import { logger } from './logger';
+
+let sentimentTask: ScheduledTask | null = null;
+
+export function rescheduleReportCron(hour: number): void {
+  sentimentTask?.stop();
+  sentimentTask = cron.schedule(`0 ${hour} * * *`, async () => {
+    if (getSetting('sentiment_enabled', 'true') !== 'true') {
+      logger.info('[scheduler] Daily sentiment skipped — disabled in settings');
+      return;
+    }
+    logger.info('[scheduler] Daily sentiment analysis triggered');
+    try {
+      await collectSentiment();
+    } catch (err) {
+      logger.error('[scheduler] Sentiment analysis failed:', err);
+    }
+  });
+  logger.info(`[scheduler] Sentiment report scheduled for ${hour}:00 UTC`);
+}
 
 export function startScheduler(): void {
   // ── Posts + comments every 15 minutes ───────────────────────────────────────
@@ -16,9 +35,6 @@ export function startScheduler(): void {
       const newPostIds = await collectNewPosts();
 
       // Re-fetch comments for ALL posts younger than 3 days, not just new ones.
-      // Posts accumulate comments over time — without this, a post scraped with
-      // 0 comments would never have its comments updated.
-      // INSERT OR IGNORE on comments means duplicates are safely skipped.
       const recentPostIds = getPostIdsYoungerThan(3);
       const toFetch = [...new Set([...newPostIds, ...recentPostIds])];
 
@@ -42,17 +58,11 @@ export function startScheduler(): void {
     }
   });
 
-  // ── Daily sentiment analysis at configured hour (UTC) ───────────────────────
-  cron.schedule(`0 ${config.sentimentHour} * * *`, async () => {
-    logger.info('[scheduler] Daily sentiment analysis triggered');
-    try {
-      await collectSentiment();
-    } catch (err) {
-      logger.error('[scheduler] Sentiment analysis failed:', err);
-    }
-  });
+  // ── Daily sentiment at configured hour (UTC, overridable via settings) ───────
+  const initialHour = parseInt(getSetting('sentiment_hour', String(config.sentimentHour)), 10);
+  rescheduleReportCron(initialHour);
 
   logger.info(
-    `[scheduler] Started — posts every ${postInterval}min, stats every ${statsInterval}min, sentiment daily at ${config.sentimentHour}:00 UTC`,
+    `[scheduler] Started — posts every ${postInterval}min, stats every ${statsInterval}min, sentiment daily at ${initialHour}:00 UTC`,
   );
 }

@@ -1,4 +1,4 @@
-import { getDb, insertSentimentReport, getSentimentReports, PostRow, CommentRow, SentimentRow } from '../store/db';
+import { getDb, insertSentimentReport, getSentimentReports, getSetting, PostRow, CommentRow, SentimentRow } from '../store/db';
 import { config } from '../config';
 import { logger } from '../logger';
 import { analyseCommunityPulse, buildContentArray, PulseItem, PulseResult } from '../api/openai';
@@ -109,21 +109,24 @@ export async function collectSentiment(): Promise<void> {
   }
 
   const db = getDb();
-  const nowSec = Math.floor(Date.now() / 1000);
-  const dayAgo = nowSec - 24 * 3600;
+  const nowSec     = Math.floor(Date.now() / 1000);
+  const analysisDays = parseInt(getSetting('analysis_days', '1'), 10);
+  const maxPosts     = parseInt(getSetting('max_posts', '50'), 10);
+  const maxComments  = parseInt(getSetting('max_comments', '15'), 10);
+  const windowAgo    = nowSec - analysisDays * 24 * 3600;
 
-  // Get top posts from last 24h (by score, capped at 50)
+  // Get top posts from the analysis window (by score)
   const posts = db
     .prepare(`
       SELECT * FROM posts
       WHERE created_utc >= ?
       ORDER BY score DESC
-      LIMIT 50
+      LIMIT ?
     `)
-    .all(dayAgo) as PostRow[];
+    .all(windowAgo, maxPosts) as PostRow[];
 
   if (posts.length < 3) {
-    logger.warn(`[sentiment] Only ${posts.length} posts in last 24h — skipping`);
+    logger.warn(`[sentiment] Only ${posts.length} posts in last ${analysisDays}d — skipping`);
     return;
   }
 
@@ -135,17 +138,15 @@ export async function collectSentiment(): Promise<void> {
         SELECT * FROM comments
         WHERE post_id = ?
         ORDER BY score DESC
-        LIMIT 15
+        LIMIT ?
       `)
-      .all(p.post_id) as CommentRow[];
+      .all(p.post_id, maxComments) as CommentRow[];
     commentsByPost.set(p.post_id, comments);
   }
 
-  logger.info(`[sentiment] Analysing ${posts.length} posts with OpenAI...`);
+  logger.info(`[sentiment] Analysing ${posts.length} posts (${analysisDays}d window, max ${maxComments} comments/post) with OpenAI...`);
 
-  // Build flat numbered content array for GPT.
-  // Authors are replaced with UserN labels; authorByIndex lets us verify counts.
-  const { content, authorByIndex } = buildContentArray(posts, commentsByPost, 8);
+  const { content, authorByIndex } = buildContentArray(posts, commentsByPost, maxComments);
 
   try {
     const pulse = await analyseCommunityPulse(content);

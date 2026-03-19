@@ -13,7 +13,10 @@ import {
   getPostsPerDay,
   getSentimentReports,
   getSentimentReportTrend,
+  getSetting,
+  setSetting,
 } from '../store/db';
+import { rescheduleReportCron } from '../scheduler';
 import { getLastAttemptedAt } from '../store/collectionState';
 import {
   createChatJob,
@@ -143,6 +146,45 @@ app.post('/api/trigger/sentiment', (_req, res) => {
     );
     res.json({ ok: true, message: 'Sentiment analysis triggered' });
   }).catch(() => res.status(500).json({ error: 'Failed to load collector' }));
+});
+
+// ── Settings ───────────────────────────────────────────────────────────────────
+
+app.get('/api/settings', (_req, res) => {
+  res.json({
+    sentiment_enabled:  getSetting('sentiment_enabled', 'true') === 'true',
+    sentiment_hour:     parseInt(getSetting('sentiment_hour', String(config.sentimentHour)), 10),
+    analysis_days:      parseInt(getSetting('analysis_days', '1'), 10),
+    max_posts:          parseInt(getSetting('max_posts', '50'), 10),
+    max_comments:       parseInt(getSetting('max_comments', '15'), 10),
+  });
+});
+
+app.post('/api/settings', (req, res) => {
+  try {
+    const body = req.body as Record<string, unknown>;
+    if ('sentiment_enabled' in body) {
+      setSetting('sentiment_enabled', body.sentiment_enabled ? 'true' : 'false');
+    }
+    if ('sentiment_hour' in body) {
+      const hour = Math.min(23, Math.max(0, Number(body.sentiment_hour)));
+      setSetting('sentiment_hour', String(hour));
+      rescheduleReportCron(hour);
+    }
+    if ('analysis_days' in body) {
+      setSetting('analysis_days', String(Math.min(7, Math.max(1, Number(body.analysis_days)))));
+    }
+    if ('max_posts' in body) {
+      setSetting('max_posts', String(Math.min(200, Math.max(10, Number(body.max_posts)))));
+    }
+    if ('max_comments' in body) {
+      setSetting('max_comments', String(Math.min(30, Math.max(1, Number(body.max_comments)))));
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error('[dashboard] POST /api/settings error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // ── Collection trigger ────────────────────────────────────────────────────────

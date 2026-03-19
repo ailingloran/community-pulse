@@ -69,6 +69,11 @@ export function initDb(): void {
       error         TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_posts_created   ON posts    (created_utc DESC);
     CREATE INDEX IF NOT EXISTS idx_posts_flair      ON posts    (flair);
     CREATE INDEX IF NOT EXISTS idx_comments_post    ON comments (post_id);
@@ -113,6 +118,17 @@ export function initDb(): void {
   }
 
   logger.info(`[db] Reddit DB opened at ${config.dbPath}`);
+}
+
+// ── Settings ───────────────────────────────────────────────────────────────────
+
+export function getSetting(key: string, defaultValue: string): string {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  return row?.value ?? defaultValue;
+}
+
+export function setSetting(key: string, value: string): void {
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
 }
 
 // ── Posts ──────────────────────────────────────────────────────────────────────
