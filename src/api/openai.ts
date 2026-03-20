@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { config } from '../config';
 import { logger } from '../logger';
+import { getSetting } from '../store/db';
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -231,8 +232,9 @@ export async function analyseCommunityPulse(content: string[]): Promise<PulseRes
   const userPrompt = `Below are ${content.length} numbered items from r/WorldOfWarships (posts and comments), 1-based index.\n\n${numbered}`;
 
   try {
+    const pulseModel = getSetting('pulse_model', 'gpt-5.1');
     const response = await client.chat.completions.create({
-      model:                 'gpt-5.1',
+      model:                 pulseModel,
       max_completion_tokens: 16000,
       response_format:       { type: 'json_object' },
       messages: [
@@ -338,8 +340,9 @@ ${dataText}`;
     { role: 'user', content: question },
   ];
 
+  const chatModel = getSetting('chat_model', 'gpt-5.1');
   const response = await client.chat.completions.create({
-    model:       'gpt-4o',
+    model:       chatModel,
     temperature: 0.3,
     max_tokens:  2000,
     messages,

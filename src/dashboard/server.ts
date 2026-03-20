@@ -157,6 +157,8 @@ app.get('/api/settings', (_req, res) => {
     analysis_days:      parseInt(getSetting('analysis_days', '1'), 10),
     max_posts:          parseInt(getSetting('max_posts', '50'), 10),
     max_comments:       parseInt(getSetting('max_comments', '30'), 10),
+    pulse_model:        getSetting('pulse_model', 'gpt-5.1'),
+    chat_model:         getSetting('chat_model', 'gpt-5.1'),
   });
 });
 
@@ -179,6 +181,12 @@ app.post('/api/settings', (req, res) => {
     }
     if ('max_comments' in body) {
       setSetting('max_comments', String(Math.min(200, Math.max(1, Number(body.max_comments)))));
+    }
+    if ('pulse_model' in body && typeof body.pulse_model === 'string') {
+      setSetting('pulse_model', body.pulse_model);
+    }
+    if ('chat_model' in body && typeof body.chat_model === 'string') {
+      setSetting('chat_model', body.chat_model);
     }
     res.json({ ok: true });
   } catch (err) {
